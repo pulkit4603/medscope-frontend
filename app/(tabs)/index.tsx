@@ -10,6 +10,7 @@ import {
 } from "react-native";
 import { Feather, FontAwesome5, MaterialIcons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import { router } from "expo-router";
 
 export default function HomeScreen() {
   // Sample profile image URL - replace with actual user image path
@@ -24,21 +25,29 @@ export default function HomeScreen() {
     { name: "Record", icon: "clipboard", iconType: "feather" },
   ];
 
-  // Supported tests data
+  // Supported tests data with updated icons that are available in the icon packs
   const supportedTests = [
-    { name: "Otoscopy", icon: "ear" },
-    { name: "Pharyngoscopy", icon: "human-handsup" },
-    { name: "Dermatoscopy", icon: "human" },
-    { name: "Auscultation (Lungs)", icon: "lungs" },
-    { name: "Auscultation (Stomach)", icon: "stomach" },
-    { name: "Auscultation (Heart)", icon: "heart" },
+    { name: "Otoscopy", icon: "hearing", iconType: "material" },
+    { name: "Pharyngoscopy", icon: "user-md", iconType: "fontAwesome" },
+    { name: "Dermatoscopy", icon: "fingerprint", iconType: "material" },
+    { name: "Auscultation (Lungs)", icon: "wind", iconType: "feather" },
+    { name: "Auscultation (Stomach)", icon: "pie-chart", iconType: "feather" },
+    { name: "Auscultation (Heart)", icon: "heart", iconType: "fontAwesome" },
   ];
 
-  const renderIcon = (item: any) => {
+  const navigateToSupportedTests = () => {
+    router.push("/SupportedTestsScreen");
+  };
+
+  const renderIcon = (item: any, isCategory = false) => {
+    const iconColor = isCategory ? "#4A90E2" : "#FFFFFF";
+
     if (item.iconType === "feather") {
-      return <Feather name={item.icon} size={24} color="#4A90E2" />;
+      return <Feather name={item.icon} size={24} color={iconColor} />;
     } else if (item.iconType === "fontAwesome") {
-      return <FontAwesome5 name={item.icon} size={24} color="#4A90E2" />;
+      return <FontAwesome5 name={item.icon} size={24} color={iconColor} />;
+    } else if (item.iconType === "material") {
+      return <MaterialIcons name={item.icon} size={24} color={iconColor} />;
     }
   };
 
@@ -73,7 +82,7 @@ export default function HomeScreen() {
             {categories.map((category, index) => (
               <TouchableOpacity key={index} style={styles.categoryItem}>
                 <View style={styles.categoryIconContainer}>
-                  {renderIcon(category)}
+                  {renderIcon(category, true)}
                 </View>
                 <Text style={styles.categoryText}>{category.name}</Text>
               </TouchableOpacity>
@@ -85,7 +94,7 @@ export default function HomeScreen() {
         <View style={styles.sectionContainer}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Supported Tests</Text>
-            <TouchableOpacity>
+            <TouchableOpacity onPress={navigateToSupportedTests}>
               <Text style={styles.seeAllText}>See all</Text>
             </TouchableOpacity>
           </View>
@@ -97,7 +106,7 @@ export default function HomeScreen() {
                   colors={["#4A90E2", "#5AC8FA"]}
                   style={styles.gradient}
                 >
-                  <FontAwesome5 name={test.icon} size={28} color="#FFFFFF" />
+                  {renderIcon(test)}
                   <Text style={styles.testName}>{test.name}</Text>
                 </LinearGradient>
               </TouchableOpacity>
@@ -128,6 +137,7 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#F8FAFC",
+    paddingTop: 16, // Adding top padding to the safe area
   },
   container: {
     flex: 1,

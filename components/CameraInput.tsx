@@ -19,7 +19,10 @@ type CameraInputProps = {
   height?: number;
   facing?: "front" | "back";
   onPermissionDenied?: () => ReactNode;
-  onCapture?: (result: any) => void;
+  onCapture?: (photo: CameraCapturedPicture, apiResponse?: any) => void;
+  buttonSize?: "small" | "medium" | "large";
+  buttonPosition?: "close" | "far";
+  buttonStyle?: object;
 };
 
 export default function CameraInput({
@@ -28,6 +31,9 @@ export default function CameraInput({
   facing = "back",
   onPermissionDenied,
   onCapture,
+  buttonSize = "medium",
+  buttonPosition = "far",
+  buttonStyle = {},
 }: CameraInputProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<any>(null);
@@ -39,9 +45,9 @@ export default function CameraInput({
     try {
       setIsUploading(true);
       const photo = await cameraRef.current.takePictureAsync();
-      await uploadImage(photo);
+      const apiResponse = await uploadImage(photo);
       if (onCapture) {
-        onCapture(photo);
+        onCapture(photo, apiResponse);
       }
     } catch (error) {
       console.error("Error capturing image:", error);
@@ -98,6 +104,27 @@ export default function CameraInput({
     );
   }
 
+  // Get button dimensions based on size prop
+  const getButtonDimensions = () => {
+    switch (buttonSize) {
+      case "small":
+        return { height: 60, width: 60, borderRadius: 30 };
+      case "large":
+        return { height: 100, width: 100, borderRadius: 50 };
+      case "medium":
+      default:
+        return { height: 80, width: 80, borderRadius: 40 };
+    }
+  };
+
+  // Get position styles based on buttonPosition prop
+  const getPositionStyles = () => {
+    return buttonPosition === "close" ? { marginTop: 10 } : { marginTop: 30 };
+  };
+
+  const buttonDimensions = getButtonDimensions();
+  const positionStyles = getPositionStyles();
+
   return (
     <View style={styles.container}>
       <View style={[styles.cameraContainer, { width, height }]}>
@@ -111,11 +138,35 @@ export default function CameraInput({
       </View>
 
       <TouchableOpacity
-        style={styles.captureButton}
+        style={[
+          styles.captureButton,
+          buttonDimensions,
+          positionStyles,
+          buttonStyle,
+        ]}
         onPress={captureImage}
         disabled={isUploading}
       >
-        <View style={styles.captureButtonInner} />
+        <View
+          style={[
+            styles.captureButtonInner,
+            {
+              width: "70%",
+              height: "70%",
+              backgroundColor: "#3b82f6",
+              borderRadius: 100,
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+            },
+          ]}
+        >
+          {isUploading ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <View style={styles.captureDot} />
+          )}
+        </View>
       </TouchableOpacity>
     </View>
   );
@@ -147,20 +198,25 @@ const styles = StyleSheet.create({
     height: "100%",
   },
   captureButton: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    backgroundColor: "rgba(255, 255, 255, 0.3)",
+    backgroundColor: "#fff",
     justifyContent: "center",
     alignItems: "center",
-    marginTop: 20,
-    borderWidth: 3,
-    borderColor: "#fff",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
   captureButtonInner: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
+    width: "80%",
+    height: "80%",
+    borderRadius: 100,
+    backgroundColor: "#ef4444",
+  },
+  captureDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
     backgroundColor: "#fff",
   },
   uploadingOverlay: {
