@@ -8,22 +8,105 @@ import {
   StatusBar,
   Platform,
   Image,
+  ScrollView,
+  Modal,
+  Dimensions,
+  FlatList,
 } from "react-native";
 import CameraInput from "../components/CameraInput";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocalSearchParams, router } from "expo-router";
 import { Feather } from "@expo/vector-icons";
+import * as FileSystem from "expo-file-system";
 
 interface ApiResponse {
   message?: string;
   image?: string;
   filename?: string;
+  path?: string;
 }
+
+interface ImageItem {
+  id: string;
+  uri: string;
+  filename: string;
+  timestamp: number;
+}
+
+const IMAGES_DIRECTORY = FileSystem.documentDirectory + "medscope-images/";
 
 export default function ImagingScreen() {
   const [captureResult, setCaptureResult] = useState<any>(null);
   const [apiResponse, setApiResponse] = useState<ApiResponse | null>(null);
+  const [images, setImages] = useState<ImageItem[]>([]);
+  const [selectedImage, setSelectedImage] = useState<ImageItem | null>(null);
+  const [modalVisible, setModalVisible] = useState<boolean>(false);
   const { testName } = useLocalSearchParams<{ testName: string }>();
+
+  // Setup directory for storing images
+  useEffect(() => {
+    setupDirectory();
+    loadSavedImages();
+  }, []);
+
+  const setupDirectory = async () => {
+    const dirInfo = await FileSystem.getInfoAsync(IMAGES_DIRECTORY);
+    if (!dirInfo.exists) {
+      await FileSystem.makeDirectoryAsync(IMAGES_DIRECTORY, {
+        intermediates: true,
+      });
+    }
+  };
+
+  const loadSavedImages = async () => {
+    try {
+      const files = await FileSystem.readDirectoryAsync(IMAGES_DIRECTORY);
+      const imageItems = await Promise.all(
+        files.map(async (filename) => {
+          const fileUri = IMAGES_DIRECTORY + filename;
+          const fileInfo = await FileSystem.getInfoAsync(fileUri);
+          const metadata = filename.split("_");
+          return {
+            id: filename,
+            uri: fileUri,
+            filename: metadata[0] || "unknown",
+            timestamp: parseInt(metadata[1] || Date.now().toString()),
+          };
+        })
+      );
+
+      // Sort by timestamp (newest first)
+      setImages(imageItems.sort((a, b) => b.timestamp - a.timestamp));
+    } catch (error) {
+      console.error("Failed to load images:", error);
+    }
+  };
+
+  const saveImageToDevice = async (uri: string, filename: string) => {
+    try {
+      const timestamp = Date.now();
+      const newFilename = `${filename || "image"}_${timestamp}.jpg`;
+      const newUri = IMAGES_DIRECTORY + newFilename;
+
+      await FileSystem.copyAsync({
+        from: uri,
+        to: newUri,
+      });
+
+      const newImage: ImageItem = {
+        id: newFilename,
+        uri: newUri,
+        filename: filename || "image",
+        timestamp,
+      };
+
+      setImages((prevImages) => [newImage, ...prevImages]);
+      return newImage;
+    } catch (error) {
+      console.error("Error saving image:", error);
+      return null;
+    }
+  };
 
   // Custom permission denied handler
   const handlePermissionDenied = () => (
@@ -35,12 +118,35 @@ export default function ImagingScreen() {
     </View>
   );
 
-  const handleCapture = (result: any, response: any) => {
+  const handleCapture = async (result: any, response: any) => {
     setCaptureResult(result);
     setApiResponse(response);
     console.log("Image captured and uploaded:", result);
     console.log("API response:", response);
+
+    // Save the captured image
+    if (result && result.uri) {
+      await saveImageToDevice(result.uri, response?.filename || "captured");
+    }
   };
+
+  const handleImagePress = (item: ImageItem) => {
+    setSelectedImage(item);
+    setModalVisible(true);
+  };
+
+  const renderImageItem = ({ item }: { item: ImageItem }) => (
+    <TouchableOpacity
+      style={styles.gridItem}
+      onPress={() => handleImagePress(item)}
+    >
+      <Image
+        source={{ uri: item.uri }}
+        style={styles.gridImage}
+        resizeMode="cover"
+      />
+    </TouchableOpacity>
+  );
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -60,7 +166,10 @@ export default function ImagingScreen() {
         </View>
       </View>
 
-      <View style={styles.container}>
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+      >
         <View style={styles.cameraContainer}>
           <CameraInput
             width={300}
@@ -86,48 +195,80 @@ export default function ImagingScreen() {
             }}
           />
         </View>
-        
-        {(apiResponse || captureResult) && (
-          <View style={styles.resultContainer}>
-            {apiResponse && (
-              <Text style={styles.captureStatus}>
-                {apiResponse.message || "Image processed successfully"}
-              </Text>
-            )}
-            
-            <View style={styles.imagePreviewContainer}>
-              {apiResponse && apiResponse.image ? (
-                <Image
-                  source={{ uri: `data:image/jpeg;base64,${apiResponse.image}` }}
-                  style={styles.previewImage}
-                  resizeMode="contain"
-                />
-              ) : captureResult ? (
-                <Image
-                  source={{ uri: captureResult.uri }}
-                  style={styles.previewImage}
-                  resizeMode="contain"
-                />
-              ) : null}
-              
-              {apiResponse && (
-                <Text style={styles.filenameText}>
-                  {apiResponse.filename || "Processed image"}
-                </Text>
-              )}
-            </View>
+
+        {apiResponse && (
+          <View style={styles.statusContainer}>
+            <Text style={styles.captureStatus}>
+              {apiResponse.message || "Image processed successfully"}
+            </Text>
           </View>
         )}
-      </View>
+
+        {images.length > 0 && (
+          <View style={styles.galleryContainer}>
+            <Text style={styles.galleryTitle}>Image Gallery</Text>
+            <FlatList
+              data={images}
+              renderItem={renderImageItem}
+              keyExtractor={(item) => item.id}
+              numColumns={3}
+              columnWrapperStyle={styles.gridRow}
+              scrollEnabled={false}
+            />
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Modal for full image view */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={modalVisible}
+        onRequestClose={() => setModalVisible(false)}
+      >
+        <View style={styles.modalContainer}>
+          <TouchableOpacity
+            style={styles.closeButton}
+            onPress={() => setModalVisible(false)}
+          >
+            <Feather name="x" size={30} color="#fff" />
+          </TouchableOpacity>
+          {selectedImage && (
+            <Image
+              source={{ uri: selectedImage.uri }}
+              style={styles.fullImage}
+              resizeMode="contain"
+            />
+          )}
+          {selectedImage && (
+            <View style={styles.imageInfo}>
+              <Text style={styles.imageInfoText}>{selectedImage.filename}</Text>
+              <Text style={styles.imageInfoText}>
+                {new Date(selectedImage.timestamp).toLocaleString()}
+              </Text>
+            </View>
+          )}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
+
+const { width } = Dimensions.get("window");
+const GRID_ITEM_WIDTH = (width - 40) / 3;
 
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#F8FAFC",
     paddingTop: Platform.OS === "android" ? StatusBar.currentHeight || 25 : 0,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    alignItems: "center",
+    paddingBottom: 20,
   },
   container: {
     flex: 1,
@@ -138,6 +279,7 @@ const styles = StyleSheet.create({
   cameraContainer: {
     alignItems: "center",
     marginTop: 0,
+    marginBottom: 10,
   },
   header: {
     padding: 16,
@@ -166,39 +308,75 @@ const styles = StyleSheet.create({
     textAlign: "center",
     paddingBottom: 10,
   },
+  statusContainer: {
+    marginVertical: 10,
+    alignItems: "center",
+  },
   captureStatus: {
-    marginTop: 15,
-    marginBottom: 10,
     color: "green",
     fontWeight: "bold",
     textAlign: "center",
   },
-  resultContainer: {
-    marginTop: 10,
-    alignItems: "center",
+  galleryContainer: {
     width: "100%",
+    paddingHorizontal: 10,
+    marginTop: 10,
   },
-  imagePreviewContainer: {
-    alignItems: "center",
-    padding: 10,
+  galleryTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    marginBottom: 10,
+    color: "#1E293B",
+    paddingHorizontal: 5,
+  },
+  gridRow: {
+    justifyContent: "space-between",
+    marginBottom: 10,
+  },
+  gridItem: {
+    width: GRID_ITEM_WIDTH,
+    height: GRID_ITEM_WIDTH,
+    borderRadius: 8,
+    overflow: "hidden",
     backgroundColor: "#fff",
-    borderRadius: 10,
+    elevation: 2,
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.15,
     shadowRadius: 2,
-    elevation: 3,
-    width: 300,
   },
-  previewImage: {
-    width: 280,
-    height: 200,
-    borderRadius: 8,
+  gridImage: {
+    width: "100%",
+    height: "100%",
   },
-  filenameText: {
-    marginTop: 10,
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#334155",
+  modalContainer: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.9)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  closeButton: {
+    position: "absolute",
+    top: 40,
+    right: 20,
+    zIndex: 10,
+    padding: 5,
+  },
+  fullImage: {
+    width: "90%",
+    height: "70%",
+  },
+  imageInfo: {
+    position: "absolute",
+    bottom: 60,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    padding: 10,
+    width: "100%",
+    alignItems: "center",
+  },
+  imageInfoText: {
+    color: "#fff",
+    fontSize: 14,
+    marginVertical: 2,
   },
 });
