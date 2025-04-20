@@ -1,74 +1,254 @@
-import { Image, StyleSheet, Platform } from 'react-native';
-
-import { HelloWave } from '@/components/HelloWave';
-import ParallaxScrollView from '@/components/ParallaxScrollView';
-import { ThemedText } from '@/components/ThemedText';
-import { ThemedView } from '@/components/ThemedView';
+import React from "react";
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Image,
+  TouchableOpacity,
+  SafeAreaView,
+} from "react-native";
+import { Feather, FontAwesome5, MaterialIcons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 
 export default function HomeScreen() {
+  // Sample profile image URL - replace with actual user image path
+  const profileImage = "https://randomuser.me/api/portraits/men/32.jpg";
+
+  // Categories data
+  const categories = [
+    { name: "Favorite", icon: "heart", iconType: "feather" },
+    { name: "Tests", icon: "vial", iconType: "fontAwesome" },
+    { name: "Pharmacy", icon: "capsules", iconType: "fontAwesome" },
+    { name: "Specialties", icon: "star", iconType: "feather" },
+    { name: "Record", icon: "clipboard", iconType: "feather" },
+  ];
+
+  // Supported tests data
+  const supportedTests = [
+    { name: "Otoscopy", icon: "ear" },
+    { name: "Pharyngoscopy", icon: "human-handsup" },
+    { name: "Dermatoscopy", icon: "human" },
+    { name: "Auscultation (Lungs)", icon: "lungs" },
+    { name: "Auscultation (Stomach)", icon: "stomach" },
+    { name: "Auscultation (Heart)", icon: "heart" },
+  ];
+
+  const renderIcon = (item: any) => {
+    if (item.iconType === "feather") {
+      return <Feather name={item.icon} size={24} color="#4A90E2" />;
+    } else if (item.iconType === "fontAwesome") {
+      return <FontAwesome5 name={item.icon} size={24} color="#4A90E2" />;
+    }
+  };
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12'
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-        <ThemedText>
-          Tap the Explore tab to learn more about what's included in this starter app.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          When you're ready, run{' '}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+    <SafeAreaView style={styles.safeArea}>
+      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+        {/* Top Section with Profile */}
+        <View style={styles.profileSection}>
+          <View style={styles.welcomeContainer}>
+            <Text style={styles.welcomeText}>Welcome Back,</Text>
+            <Text style={styles.nameText}>Aditya Nagane</Text>
+          </View>
+          <View style={styles.profileImageContainer}>
+            <Image source={{ uri: profileImage }} style={styles.profileImage} />
+          </View>
+        </View>
+
+        {/* Categories Section */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Categories</Text>
+            <TouchableOpacity>
+              <Text style={styles.seeAllText}>See all</Text>
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoriesContainer}
+          >
+            {categories.map((category, index) => (
+              <TouchableOpacity key={index} style={styles.categoryItem}>
+                <View style={styles.categoryIconContainer}>
+                  {renderIcon(category)}
+                </View>
+                <Text style={styles.categoryText}>{category.name}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
+        {/* Supported Tests Section */}
+        <View style={styles.sectionContainer}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Supported Tests</Text>
+            <TouchableOpacity>
+              <Text style={styles.seeAllText}>See all</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.testsGrid}>
+            {supportedTests.map((test, index) => (
+              <TouchableOpacity key={index} style={styles.testCard}>
+                <LinearGradient
+                  colors={["#4A90E2", "#5AC8FA"]}
+                  style={styles.gradient}
+                >
+                  <FontAwesome5 name={test.icon} size={28} color="#FFFFFF" />
+                  <Text style={styles.testName}>{test.name}</Text>
+                </LinearGradient>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        {/* Recent Tests Section */}
+        <View style={[styles.sectionContainer, { marginBottom: 20 }]}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>Recent Tests</Text>
+            <TouchableOpacity>
+              <Text style={styles.seeAllText}>See all</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Empty content for now - as requested */}
+          <View style={styles.emptyRecentTests}>
+            <Text style={styles.emptyText}>No recent tests available</Text>
+          </View>
+        </View>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+  safeArea: {
+    flex: 1,
+    backgroundColor: "#F8FAFC",
   },
-  stepContainer: {
-    gap: 8,
+  container: {
+    flex: 1,
+    padding: 16,
+  },
+  profileSection: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginTop: 10,
+    marginBottom: 20,
+  },
+  welcomeContainer: {
+    flex: 1,
+  },
+  welcomeText: {
+    fontSize: 16,
+    color: "#64748B",
+  },
+  nameText: {
+    fontSize: 20,
+    fontWeight: "bold",
+    color: "#1E293B",
+  },
+  profileImageContainer: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    overflow: "hidden",
+    borderWidth: 2,
+    borderColor: "#4A90E2",
+  },
+  profileImage: {
+    width: "100%",
+    height: "100%",
+  },
+  sectionContainer: {
+    marginBottom: 20,
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: "bold",
+    color: "#1E293B",
+  },
+  seeAllText: {
+    fontSize: 14,
+    color: "#4A90E2",
+  },
+  categoriesContainer: {
+    paddingBottom: 8,
+  },
+  categoryItem: {
+    alignItems: "center",
+    marginRight: 24,
+    width: 70,
+  },
+  categoryIconContainer: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: "#EFF6FF",
+    justifyContent: "center",
+    alignItems: "center",
     marginBottom: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  categoryText: {
+    fontSize: 12,
+    color: "#475569",
+    textAlign: "center",
+  },
+  testsGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "space-between",
+  },
+  testCard: {
+    width: "31%",
+    aspectRatio: 1,
+    marginBottom: 10,
+    borderRadius: 12,
+    overflow: "hidden",
+    elevation: 2,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+  },
+  gradient: {
+    width: "100%",
+    height: "100%",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 10,
+  },
+  testName: {
+    color: "#FFFFFF",
+    fontSize: 11,
+    fontWeight: "500",
+    textAlign: "center",
+    marginTop: 8,
+  },
+  emptyRecentTests: {
+    height: 100,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "#F1F5F9",
+    borderRadius: 10,
+  },
+  emptyText: {
+    color: "#94A3B8",
+    fontSize: 16,
   },
 });

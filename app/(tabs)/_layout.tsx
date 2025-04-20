@@ -1,9 +1,9 @@
 import { Tabs } from "expo-router";
 import React from "react";
 import { Platform } from "react-native";
+import { Feather } from "@expo/vector-icons";
 
 import { HapticTab } from "@/components/HapticTab";
-import { IconSymbol } from "@/components/ui/IconSymbol";
 import TabBarBackground from "@/components/ui/TabBarBackground";
 import { Colors } from "@/constants/Colors";
 import { useColorScheme } from "@/hooks/useColorScheme";
@@ -32,25 +32,59 @@ export default function TabLayout() {
         options={{
           title: "Home",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="house.fill" color={color} />
+            <Feather name="home" size={24} color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="explore"
+        name="chat"
         options={{
-          title: "Explore",
+          title: "Chat",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="paperplane.fill" color={color} />
+            <Feather name="message-circle" size={24} color={color} />
           ),
         }}
+        listeners={() => ({
+          tabPress: (e) => {
+            // Prevent default behavior
+            e.preventDefault();
+            // Show a message or handle the action
+            alert("Chat feature coming soon!");
+          },
+        })}
       />
       <Tabs.Screen
         name="imaging"
         options={{
-          title: "Camera",
+          title: "Imaging",
           tabBarIcon: ({ color }) => (
-            <IconSymbol size={28} name="camera.fill" color={color} />
+            <Feather name="camera" size={24} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="profile"
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ color }) => (
+            <Feather name="user" size={24} color={color} />
+          ),
+        }}
+        listeners={() => ({
+          tabPress: (e) => {
+            // Prevent default behavior
+            e.preventDefault();
+            // Show a message or handle the action
+            alert("Profile feature coming soon!");
+          },
+        })}
+      />
+      <Tabs.Screen
+        name="explore"
+        options={{
+          title: "Calendar",
+          tabBarIcon: ({ color }) => (
+            <Feather name="calendar" size={24} color={color} />
           ),
         }}
       />
