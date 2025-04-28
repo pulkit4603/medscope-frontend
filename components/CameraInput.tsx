@@ -11,8 +11,29 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from "react-native";
-import { ReactNode, useRef, useState } from "react";
+import {
+  ReactNode,
+  useRef,
+  useState,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
 import { apiurl } from "@/constants/api";
+
+// Define interface matching the backend response structure
+interface MedicalAssessment {
+  diagnosis: string;
+  findings: string;
+  recommendation: string;
+}
+
+interface ApiResponse {
+  message?: string;
+  filename?: string;
+  image?: string;
+  medical_assessment?: MedicalAssessment;
+  error?: boolean;
+}
 
 type CameraInputProps = {
   width?: number;
@@ -23,154 +44,209 @@ type CameraInputProps = {
   buttonSize?: "small" | "medium" | "large";
   buttonPosition?: "close" | "far";
   buttonStyle?: object;
+  category?: string;
 };
 
-export default function CameraInput({
-  width = 300,
-  height = 400,
-  facing = "back",
-  onPermissionDenied,
-  onCapture,
-  buttonSize = "medium",
-  buttonPosition = "far",
-  buttonStyle = {},
-}: CameraInputProps) {
-  const [permission, requestPermission] = useCameraPermissions();
-  const cameraRef = useRef<any>(null);
-  const [isUploading, setIsUploading] = useState(false);
+// Define interface for the exposed methods via ref
+interface CameraInputHandle {
+  uploadImage: (photo: CameraCapturedPicture) => Promise<ApiResponse>;
+}
 
-  const captureImage = async () => {
-    if (!cameraRef.current) return;
+const CameraInput = forwardRef<CameraInputHandle, CameraInputProps>(
+  (
+    {
+      width = 300,
+      height = 400,
+      facing = "back",
+      onPermissionDenied,
+      onCapture,
+      buttonSize = "medium",
+      buttonPosition = "far",
+      buttonStyle = {},
+      category,
+    },
+    ref
+  ) => {
+    const [permission, requestPermission] = useCameraPermissions();
+    const cameraRef = useRef<any>(null);
+    const [isUploading, setIsUploading] = useState(false);
 
-    try {
-      setIsUploading(true);
-      const photo = await cameraRef.current.takePictureAsync();
-      const apiResponse = await uploadImage(photo);
-      if (onCapture) {
-        onCapture(photo, apiResponse);
+    // Expose the uploadImage method to parent component via ref
+    useImperativeHandle(ref, () => ({
+      uploadImage: uploadImage,
+    }));
+
+    const captureImage = async () => {
+      if (!cameraRef.current) return;
+
+      try {
+        setIsUploading(true);
+        const photo = await cameraRef.current.takePictureAsync();
+        const apiResponse = await uploadImage(photo);
+        if (onCapture) {
+          onCapture(photo, apiResponse);
+        }
+      } catch (error) {
+        console.error("Error capturing image:", error);
+      } finally {
+        setIsUploading(false);
       }
-    } catch (error) {
-      console.error("Error capturing image:", error);
-    } finally {
-      setIsUploading(false);
+    };
+
+    const uploadImage = async (photo: CameraCapturedPicture) => {
+      try {
+        // Create form data for the upload
+        const formData = new FormData();
+
+        // Add the image file with correct parameter name "image" (not "images")
+        const imageFile = {
+          uri: photo.uri,
+          type: "image/jpeg",
+          name: "upload.jpg", // Ensure filename is provided
+        } as any;
+
+        formData.append("image", imageFile);
+
+        // Add category data as a separate field if needed
+        if (category) {
+          formData.append("category", category);
+        }
+
+        console.log("Uploading to:", `${apiurl}/upload-image`);
+
+        // Send to API
+        const response = await fetch(`${apiurl}/upload-image`, {
+          method: "POST",
+          body: formData,
+          headers: {
+            "Content-Type": "multipart/form-data",
+          },
+        });
+
+        // Check if response is ok
+        if (!response.ok) {
+          // Get response text for debugging
+          const errorText = await response.text();
+          console.error(`API Error (${response.status}):`, errorText);
+          throw new Error(
+            `Server returned ${response.status}: ${errorText.substring(
+              0,
+              100
+            )}...`
+          );
+        }
+
+        // Check Content-Type header to ensure we're getting JSON
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          const responseText = await response.text();
+          console.error(
+            "Non-JSON response received:",
+            responseText.substring(0, 200)
+          );
+          throw new Error("Server returned non-JSON response");
+        }
+
+        const result = (await response.json()) as ApiResponse;
+        console.log("Upload successful, received response");
+        return result;
+      } catch (error: any) {
+        console.error("Error uploading image:", error);
+        return {
+          error: true,
+          message: error.message || "Failed to upload image",
+        } as ApiResponse;
+      }
+    };
+
+    if (!permission) {
+      // Camera permissions are still loading.
+      return <View />;
     }
-  };
 
-  const uploadImage = async (photo: CameraCapturedPicture) => {
-    try {
-      // Create form data for the upload
-      const formData = new FormData();
-      formData.append("image", {
-        uri: photo.uri,
-        type: "image/jpeg",
-        name: "upload.jpg",
-      } as any);
-
-      // Send to API
-      const response = await fetch(`${apiurl}/upload-image`, {
-        method: "POST",
-        body: formData,
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-
-      const result = await response.json();
-      console.log("Upload successful:", result);
-      return result;
-    } catch (error) {
-      console.error("Error uploading image:", error);
-      throw error;
+    if (!permission.granted) {
+      // Camera permissions are not granted yet.
+      if (onPermissionDenied) {
+        return <>{onPermissionDenied()}</>;
+      }
+      return (
+        <View style={styles.container}>
+          <Text style={styles.message}>
+            We need your permission to show the camera
+          </Text>
+          <Button onPress={requestPermission} title="grant permission" />
+        </View>
+      );
     }
-  };
 
-  if (!permission) {
-    // Camera permissions are still loading.
-    return <View />;
-  }
+    // Get button dimensions based on size prop
+    const getButtonDimensions = () => {
+      switch (buttonSize) {
+        case "small":
+          return { height: 60, width: 60, borderRadius: 30 };
+        case "large":
+          return { height: 100, width: 100, borderRadius: 50 };
+        case "medium":
+        default:
+          return { height: 80, width: 80, borderRadius: 40 };
+      }
+    };
 
-  if (!permission.granted) {
-    // Camera permissions are not granted yet.
-    if (onPermissionDenied) {
-      return <>{onPermissionDenied()}</>;
-    }
+    // Get position styles based on buttonPosition prop
+    const getPositionStyles = () => {
+      return buttonPosition === "close" ? { marginTop: 10 } : { marginTop: 30 };
+    };
+
+    const buttonDimensions = getButtonDimensions();
+    const positionStyles = getPositionStyles();
+
     return (
       <View style={styles.container}>
-        <Text style={styles.message}>
-          We need your permission to show the camera
-        </Text>
-        <Button onPress={requestPermission} title="grant permission" />
+        <View style={[styles.cameraContainer, { width, height }]}>
+          <CameraView style={styles.camera} facing={facing} ref={cameraRef} />
+          {isUploading && (
+            <View style={styles.uploadingOverlay}>
+              <ActivityIndicator color="#fff" size="large" />
+              <Text style={styles.uploadingText}>Uploading...</Text>
+            </View>
+          )}
+        </View>
+
+        <TouchableOpacity
+          style={[
+            styles.captureButton,
+            buttonDimensions,
+            positionStyles,
+            buttonStyle,
+          ]}
+          onPress={captureImage}
+          disabled={isUploading}
+        >
+          <View
+            style={[
+              styles.captureButtonInner,
+              {
+                width: "70%",
+                height: "70%",
+                backgroundColor: "#3b82f6",
+                borderRadius: 100,
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+              },
+            ]}
+          >
+            {isUploading ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <View style={styles.captureDot} />
+            )}
+          </View>
+        </TouchableOpacity>
       </View>
     );
   }
-
-  // Get button dimensions based on size prop
-  const getButtonDimensions = () => {
-    switch (buttonSize) {
-      case "small":
-        return { height: 60, width: 60, borderRadius: 30 };
-      case "large":
-        return { height: 100, width: 100, borderRadius: 50 };
-      case "medium":
-      default:
-        return { height: 80, width: 80, borderRadius: 40 };
-    }
-  };
-
-  // Get position styles based on buttonPosition prop
-  const getPositionStyles = () => {
-    return buttonPosition === "close" ? { marginTop: 10 } : { marginTop: 30 };
-  };
-
-  const buttonDimensions = getButtonDimensions();
-  const positionStyles = getPositionStyles();
-
-  return (
-    <View style={styles.container}>
-      <View style={[styles.cameraContainer, { width, height }]}>
-        <CameraView style={styles.camera} facing={facing} ref={cameraRef} />
-        {isUploading && (
-          <View style={styles.uploadingOverlay}>
-            <ActivityIndicator color="#fff" size="large" />
-            <Text style={styles.uploadingText}>Uploading...</Text>
-          </View>
-        )}
-      </View>
-
-      <TouchableOpacity
-        style={[
-          styles.captureButton,
-          buttonDimensions,
-          positionStyles,
-          buttonStyle,
-        ]}
-        onPress={captureImage}
-        disabled={isUploading}
-      >
-        <View
-          style={[
-            styles.captureButtonInner,
-            {
-              width: "70%",
-              height: "70%",
-              backgroundColor: "#3b82f6",
-              borderRadius: 100,
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-            },
-          ]}
-        >
-          {isUploading ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <View style={styles.captureDot} />
-          )}
-        </View>
-      </TouchableOpacity>
-    </View>
-  );
-}
+);
 
 const styles = StyleSheet.create({
   container: {
@@ -235,3 +311,5 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
 });
+
+export default CameraInput;

@@ -19,7 +19,6 @@ import { useEffect, useState, useRef } from "react";
 import { useLocalSearchParams, router } from "expo-router";
 import { Feather } from "@expo/vector-icons";
 import * as FileSystem from "expo-file-system";
-import { apiurl } from "@/constants/api";
 
 interface MedicalAssessment {
   diagnosis: string;
@@ -59,15 +58,14 @@ export default function ImagingScreen() {
   const [selectedImage, setSelectedImage] = useState<ImageItem | null>(null);
   const [modalVisible, setModalVisible] = useState<boolean>(false);
   const { testName } = useLocalSearchParams<{ testName: string }>();
-
+  
   // New state variables for guided capture
   const [captureStep, setCaptureStep] = useState<number>(1);
-  const [dermoscopicCaptures, setDermoscopicCaptures] =
-    useState<DermoscopicCapture>({
-      globalView: null,
-      regionalView: null,
-      closeUpView: null,
-    });
+  const [dermoscopicCaptures, setDermoscopicCaptures] = useState<DermoscopicCapture>({
+    globalView: null,
+    regionalView: null,
+    closeUpView: null,
+  });
   const [isUploading, setIsUploading] = useState<boolean>(false);
 
   // Setup directory for storing images
@@ -185,17 +183,17 @@ export default function ImagingScreen() {
 
   const handleCapture = async (result: any, response: any = null) => {
     // Store the captured image in the appropriate step
-    switch (captureStep) {
+    switch(captureStep) {
       case 1:
-        setDermoscopicCaptures((prev) => ({ ...prev, globalView: result }));
+        setDermoscopicCaptures(prev => ({ ...prev, globalView: result }));
         setCaptureStep(2);
         break;
       case 2:
-        setDermoscopicCaptures((prev) => ({ ...prev, regionalView: result }));
+        setDermoscopicCaptures(prev => ({ ...prev, regionalView: result }));
         setCaptureStep(3);
         break;
       case 3:
-        setDermoscopicCaptures((prev) => ({ ...prev, closeUpView: result }));
+        setDermoscopicCaptures(prev => ({ ...prev, closeUpView: result }));
         setCaptureStep(4); // Move to upload step
         break;
     }
@@ -206,56 +204,15 @@ export default function ImagingScreen() {
   // New function to handle the upload of the set of dermoscopic images
   const handleDermoscopicUpload = async () => {
     if (!dermoscopicCaptures.globalView) return;
-
+    
     setIsUploading(true);
-
+    
     try {
-      // Since we're not capturing anymore (camera hidden in step 4),
-      // we need to call the API directly without using cameraRef
-      const formData = new FormData();
-
-      // Add the image file with correct parameter name
-      const imageFile = {
-        uri: dermoscopicCaptures.globalView.uri,
-        type: "image/jpeg",
-        name: "upload.jpg",
-      } as any;
-
-      formData.append("image", imageFile);
-
-      // Send to API
-      const response = await fetch(`${apiurl}/upload-image`, {
-        method: "POST",
-        body: formData,
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`API Error (${response.status}):`, errorText);
-        throw new Error(
-          `Server returned ${response.status}: ${errorText.substring(
-            0,
-            100
-          )}...`
-        );
-      }
-
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const responseText = await response.text();
-        console.error(
-          "Non-JSON response received:",
-          responseText.substring(0, 200)
-        );
-        throw new Error("Server returned non-JSON response");
-      }
-
-      const result = await response.json();
+      // Only send the first (global view) image to the endpoint
+      // This maintains the existing API request cycle
+      const result = await cameraRef.current.uploadImage(dermoscopicCaptures.globalView);
       setApiResponse(result);
-
+      
       // Save all three images to the device
       if (dermoscopicCaptures.globalView) {
         await saveImageToDevice(
@@ -264,33 +221,34 @@ export default function ImagingScreen() {
           result
         );
       }
-
+      
       if (dermoscopicCaptures.regionalView) {
         await saveImageToDevice(
           dermoscopicCaptures.regionalView.uri,
           "regional_view"
         );
       }
-
+      
       if (dermoscopicCaptures.closeUpView) {
         await saveImageToDevice(
           dermoscopicCaptures.closeUpView.uri,
           "close_up_view"
         );
       }
-
+      
       // Reset the capture process
       setCaptureStep(1);
       setDermoscopicCaptures({
         globalView: null,
         regionalView: null,
-        closeUpView: null,
+        closeUpView: null
       });
+      
     } catch (error) {
       console.error("Error uploading dermoscopic images:", error);
       setApiResponse({
         error: true,
-        message: "Failed to upload dermoscopic images",
+        message: "Failed to upload dermoscopic images"
       });
     } finally {
       setIsUploading(false);
@@ -367,7 +325,7 @@ export default function ImagingScreen() {
 
   // Render the appropriate guidance based on capture step
   const renderCaptureGuidance = () => {
-    switch (captureStep) {
+    switch(captureStep) {
       case 1:
         return (
           <View style={styles.guidanceContainer}>
@@ -378,8 +336,7 @@ export default function ImagingScreen() {
             </View>
             <Text style={styles.guidanceTitle}>Step 1: Global View</Text>
             <Text style={styles.guidanceText}>
-              Capture the lesion and surrounding skin from 15-30 cm away to
-              document the site
+              Capture the lesion and surrounding skin from 15-30 cm away to document the site
             </Text>
           </View>
         );
@@ -405,12 +362,9 @@ export default function ImagingScreen() {
               <View style={[styles.stepDot, styles.completedStepDot]}></View>
               <View style={[styles.stepDot, styles.activeStepDot]}></View>
             </View>
-            <Text style={styles.guidanceTitle}>
-              Step 3: Close-up Dermoscopic Image
-            </Text>
+            <Text style={styles.guidanceTitle}>Step 3: Close-up Dermoscopic Image</Text>
             <Text style={styles.guidanceText}>
-              Capture a close-up (≤ 2 cm) with polarized/non-polarized light to
-              reveal subsurface structures
+              Capture a close-up (≤ 2 cm) with polarized/non-polarized light to reveal subsurface structures
             </Text>
           </View>
         );
@@ -426,8 +380,8 @@ export default function ImagingScreen() {
             <Text style={styles.guidanceText}>
               Ready to upload for analysis
             </Text>
-
-            <TouchableOpacity
+            
+            <TouchableOpacity 
               style={styles.uploadButton}
               onPress={handleDermoscopicUpload}
               disabled={isUploading}
@@ -437,15 +391,15 @@ export default function ImagingScreen() {
                 {isUploading ? "Uploading..." : "Upload for Analysis"}
               </Text>
             </TouchableOpacity>
-
-            <TouchableOpacity
+            
+            <TouchableOpacity 
               style={styles.resetButton}
               onPress={() => {
                 setCaptureStep(1);
                 setDermoscopicCaptures({
                   globalView: null,
                   regionalView: null,
-                  closeUpView: null,
+                  closeUpView: null
                 });
               }}
             >
@@ -463,54 +417,44 @@ export default function ImagingScreen() {
     return (
       <View style={styles.previewContainer}>
         <View style={styles.previewItem}>
-          <View
-            style={[
-              styles.previewImage,
-              dermoscopicCaptures.globalView ? styles.previewImageFilled : null,
-            ]}
-          >
+          <View style={[
+            styles.previewImage, 
+            dermoscopicCaptures.globalView ? styles.previewImageFilled : null
+          ]}>
             {dermoscopicCaptures.globalView && (
-              <Image
-                source={{ uri: dermoscopicCaptures.globalView.uri }}
-                style={styles.previewImageContent}
+              <Image 
+                source={{ uri: dermoscopicCaptures.globalView.uri }} 
+                style={styles.previewImageContent} 
               />
             )}
           </View>
           <Text style={styles.previewText}>Global</Text>
         </View>
-
+        
         <View style={styles.previewItem}>
-          <View
-            style={[
-              styles.previewImage,
-              dermoscopicCaptures.regionalView
-                ? styles.previewImageFilled
-                : null,
-            ]}
-          >
+          <View style={[
+            styles.previewImage, 
+            dermoscopicCaptures.regionalView ? styles.previewImageFilled : null
+          ]}>
             {dermoscopicCaptures.regionalView && (
-              <Image
-                source={{ uri: dermoscopicCaptures.regionalView.uri }}
-                style={styles.previewImageContent}
+              <Image 
+                source={{ uri: dermoscopicCaptures.regionalView.uri }} 
+                style={styles.previewImageContent} 
               />
             )}
           </View>
           <Text style={styles.previewText}>Regional</Text>
         </View>
-
+        
         <View style={styles.previewItem}>
-          <View
-            style={[
-              styles.previewImage,
-              dermoscopicCaptures.closeUpView
-                ? styles.previewImageFilled
-                : null,
-            ]}
-          >
+          <View style={[
+            styles.previewImage, 
+            dermoscopicCaptures.closeUpView ? styles.previewImageFilled : null
+          ]}>
             {dermoscopicCaptures.closeUpView && (
-              <Image
-                source={{ uri: dermoscopicCaptures.closeUpView.uri }}
-                style={styles.previewImageContent}
+              <Image 
+                source={{ uri: dermoscopicCaptures.closeUpView.uri }} 
+                style={styles.previewImageContent} 
               />
             )}
           </View>
@@ -534,9 +478,7 @@ export default function ImagingScreen() {
         </TouchableOpacity>
         <View style={styles.titleContainer}>
           <Text style={styles.title}>{testName || "Imaging"}</Text>
-          <Text style={styles.subtitle}>
-            Capture standardized dermoscopy views
-          </Text>
+          <Text style={styles.subtitle}>Capture standardized dermoscopy views</Text>
         </View>
       </View>
 
