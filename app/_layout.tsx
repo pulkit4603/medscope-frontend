@@ -39,6 +39,7 @@ export default function RootLayout() {
         <Stack.Screen name="+not-found" />
         <Stack.Screen name="SupportedTestsScreen" />
         <Stack.Screen name="imaging" />
+        <Stack.Screen name="auscultation" />
       </Stack>
       <StatusBar style="auto" />
     </ThemeProvider>

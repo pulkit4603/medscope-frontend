@@ -50,10 +50,15 @@ export default function SupportedTestsScreen() {
   };
 
   const handleTestSelect = (testName: string) => {
-    // Check if it's one of the imaging tests
+    // Check if it's an imaging test or auscultation test
     if (["Pharyngoscopy", "Otoscopy", "Dermatoscopy"].includes(testName)) {
       router.push({
         pathname: "/imaging",
+        params: { testName },
+      });
+    } else if (testName.startsWith("Auscultation")) {
+      router.push({
+        pathname: "/auscultation",
         params: { testName },
       });
     }
