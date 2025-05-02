@@ -61,11 +61,7 @@ export default function AuscultationScreen() {
 
   // Mock Bluetooth devices for demonstration
   const mockDevices: BluetoothDevice[] = [
-    { id: "1", name: "MedScope Stethoscope", isConnected: false },
-    { id: "2", name: "Pulse Oximeter", isConnected: false },
-    { id: "3", name: "Digital Thermometer", isConnected: false },
-    { id: "4", name: "Heart Monitor", isConnected: false },
-    { id: "5", name: "Blood Pressure Cuff", isConnected: false },
+    { id: "1", name: "MedScope BLE", isConnected: false },
   ];
 
   // Effect to clean up recording timer
