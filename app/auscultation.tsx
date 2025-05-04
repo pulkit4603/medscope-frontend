@@ -12,6 +12,7 @@ import {
   Alert,
   ActivityIndicator,
   Modal,
+  PermissionsAndroid,
 } from "react-native";
 import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, router } from "expo-router";
@@ -21,7 +22,7 @@ import * as FileSystem from "expo-file-system";
 import * as Haptics from "expo-haptics";
 import { audioApiUrl } from "@/constants/api";
 
-// Mock Bluetooth device type
+// Bluetooth device type
 interface BluetoothDevice {
   id: string;
   name: string;
@@ -33,6 +34,20 @@ interface AnalysisResponse {
   isHealthy: boolean;
   confidence: number;
   description: string;
+}
+
+// Initialize the BLE manager conditionally to avoid the "createClient of null" error
+let bleManager: any = null;
+
+// Only import and initialize BleManager on actual devices, not in simulator/web
+if (Platform.OS === "android" || Platform.OS === "ios") {
+  try {
+    const { BleManager } = require("react-native-ble-plx");
+    bleManager = new BleManager();
+    console.log("BLE Manager initialized successfully");
+  } catch (error) {
+    console.error("Error initializing BLE Manager:", error);
+  }
 }
 
 export default function AuscultationScreen() {
@@ -59,23 +74,29 @@ export default function AuscultationScreen() {
   );
   const [showResultModal, setShowResultModal] = useState<boolean>(false);
 
-  // Mock Bluetooth devices for demonstration
-  const mockDevices: BluetoothDevice[] = [
-    { id: "1", name: "MedScope BLE", isConnected: false },
-  ];
-
-  // Effect to clean up recording timer
+  // Effect to clean up resources
   useEffect(() => {
     return () => {
       if (durationTimerRef.current) {
         clearInterval(durationTimerRef.current);
       }
+
+      // Stop scanning when component unmounts
+      if (bleManager) {
+        bleManager.stopDeviceScan();
+      }
+
+      // Destroy BLE manager when component unmounts
+      if (bleManager) {
+        bleManager.destroy();
+      }
     };
   }, []);
 
-  // Request audio recording permissions
+  // Request permissions
   useEffect(() => {
     (async () => {
+      // Request audio recording permissions
       const { status } = await Audio.requestPermissionsAsync();
       if (status !== "granted") {
         Alert.alert(
@@ -83,33 +104,154 @@ export default function AuscultationScreen() {
           "Please grant microphone permissions to use this feature."
         );
       }
+
+      // Request Bluetooth permissions for Android
+      if (Platform.OS === "android") {
+        try {
+          const apiLevel = Platform.Version;
+
+          // For Android 12+ (API level 31+)
+          if (apiLevel >= 31) {
+            const results = await PermissionsAndroid.requestMultiple([
+              PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+              PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+              PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+            ]);
+
+            const isGranted = Object.values(results).every(
+              (result) => result === PermissionsAndroid.RESULTS.GRANTED
+            );
+
+            if (!isGranted) {
+              Alert.alert(
+                "Bluetooth Permission Denied",
+                "This app requires Bluetooth scanning and connection permissions."
+              );
+            }
+          }
+          // For older Android versions
+          else {
+            const granted = await PermissionsAndroid.request(
+              PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+              {
+                title: "Location Permission",
+                message: "Bluetooth scanning requires location permission",
+                buttonPositive: "OK",
+              }
+            );
+
+            if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+              Alert.alert(
+                "Permission Denied",
+                "Location permission is required for Bluetooth scanning."
+              );
+            }
+          }
+        } catch (error) {
+          console.error("Permission request error:", error);
+        }
+      }
     })();
   }, []);
 
-  // Simulate Bluetooth scanning
-  const startBluetoothScan = () => {
-    setIsScanning(true);
-    setIsBluetoothEnabled(true);
+  // Start actual Bluetooth scanning
+  const startBluetoothScan = async () => {
+    try {
+      // Check if BLE manager is available
+      if (!bleManager) {
+        Alert.alert(
+          "Bluetooth Not Available",
+          "Bluetooth functionality is not available on this device or environment.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
 
-    // Simulate device discovery with a delay
-    setTimeout(() => {
-      setDevices(mockDevices);
+      setIsScanning(true);
+      setIsBluetoothEnabled(true);
+      setDevices([]);
+
+      // Check if Bluetooth is powered on
+      const state = await bleManager.state();
+      if (state !== "PoweredOn") {
+        Alert.alert(
+          "Bluetooth not enabled",
+          "Please enable Bluetooth to scan for devices.",
+          [{ text: "OK", onPress: () => setIsScanning(false) }]
+        );
+        return;
+      }
+
+      // Start scanning with timeout
+      bleManager.startDeviceScan(null, null, (error: any, device: any) => {
+        if (error) {
+          console.error("Bluetooth scan error:", error);
+          Alert.alert("Scan Error", error.message);
+          setIsScanning(false);
+          return;
+        }
+
+        if (device && device.name) {
+          // Add device if not already in the list
+          setDevices((prevDevices) => {
+            const deviceExists = prevDevices.some((d) => d.id === device.id);
+            if (!deviceExists) {
+              return [
+                ...prevDevices,
+                {
+                  id: device.id,
+                  name: device.name || "Unknown Device",
+                  isConnected: false,
+                },
+              ];
+            }
+            return prevDevices;
+          });
+        }
+      });
+
+      // Stop scanning after 10 seconds
+      setTimeout(() => {
+        if (bleManager) {
+          bleManager.stopDeviceScan();
+        }
+        setIsScanning(false);
+      }, 10000);
+    } catch (error) {
+      console.error("Error during Bluetooth scan:", error);
+      Alert.alert("Bluetooth Error", "Failed to start scanning for devices");
       setIsScanning(false);
-    }, 2000);
+    }
   };
 
-  // Connect to a device
-  const connectToDevice = (device: BluetoothDevice) => {
-    setIsScanning(false);
+  // Connect to a real device
+  const connectToDevice = async (device: BluetoothDevice) => {
+    try {
+      if (!bleManager) {
+        Alert.alert(
+          "Bluetooth Not Available",
+          "Cannot connect to device because Bluetooth is not available"
+        );
+        return;
+      }
 
-    // Show connecting status
-    const updatedDevices = devices.map((d) =>
-      d.id === device.id ? { ...d, isConnecting: true } : d
-    );
-    setDevices(updatedDevices);
+      setIsScanning(false);
+      bleManager.stopDeviceScan();
 
-    // Simulate connection delay
-    setTimeout(() => {
+      // Show connecting status
+      const updatedDevices = devices.map((d) =>
+        d.id === device.id ? { ...d, isConnecting: true } : d
+      );
+      setDevices(updatedDevices);
+
+      // Connect to the device
+      const connectedDeviceObj = await bleManager.connectToDevice(device.id);
+      console.log("Connected to:", connectedDeviceObj.name);
+
+      // Discover services and characteristics
+      await connectedDeviceObj.discoverAllServicesAndCharacteristics();
+
+      // Update the devices list
       const connectedDevices = devices.map((d) =>
         d.id === device.id
           ? { ...d, isConnected: true }
@@ -120,16 +262,33 @@ export default function AuscultationScreen() {
 
       // Provide haptic feedback on successful connection
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }, 1500);
+    } catch (error) {
+      console.error("Connection error:", error);
+      Alert.alert("Connection Error", "Failed to connect to the device");
+
+      // Reset connecting status
+      const resetDevices = devices.map((d) =>
+        d.id === device.id ? { ...d, isConnecting: false } : d
+      );
+      setDevices(resetDevices);
+    }
   };
 
   // Disconnect from device
-  const disconnectDevice = () => {
-    setConnectedDevice(null);
-    setDevices(devices.map((d) => ({ ...d, isConnected: false })));
+  const disconnectDevice = async () => {
+    if (!connectedDevice || !bleManager) return;
 
-    // Provide haptic feedback
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    try {
+      await bleManager.cancelDeviceConnection(connectedDevice.id);
+      setConnectedDevice(null);
+      setDevices(devices.map((d) => ({ ...d, isConnected: false })));
+
+      // Provide haptic feedback
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+    } catch (error) {
+      console.error("Disconnect error:", error);
+      Alert.alert("Disconnect Error", "Failed to disconnect from the device");
+    }
   };
 
   // Start recording
@@ -298,6 +457,51 @@ export default function AuscultationScreen() {
     </TouchableOpacity>
   );
 
+  // Add mock device functionality for demo purposes when real Bluetooth isn't available
+  const useMockDevices = () => {
+    setIsScanning(true);
+    setIsBluetoothEnabled(true);
+    setDevices([]);
+
+    // Simulate delay in finding devices
+    setTimeout(() => {
+      const mockDevices: BluetoothDevice[] = [
+        {
+          id: "00:11:22:33:44:55",
+          name: "Mock Stethoscope",
+          isConnected: false,
+        },
+        {
+          id: "AA:BB:CC:DD:EE:FF",
+          name: "Mock AuscultTech 3000",
+          isConnected: false,
+        },
+        {
+          id: "12:34:56:78:90:AB",
+          name: "Demo Medical Device",
+          isConnected: false,
+        },
+      ];
+      setDevices(mockDevices);
+      setIsScanning(false);
+    }, 2000);
+  };
+
+  // Modify the scan button press handler
+  const handleScanButtonPress = () => {
+    if (Platform.OS === "web" || !bleManager) {
+      // Use mock devices for web or when BLE isn't available
+      useMockDevices();
+      Alert.alert(
+        "Demo Mode",
+        "Running in demo mode with mock devices because Bluetooth is not available in this environment."
+      );
+    } else {
+      // Use actual Bluetooth scanning
+      startBluetoothScan();
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
@@ -340,7 +544,7 @@ export default function AuscultationScreen() {
 
               <TouchableOpacity
                 style={styles.scanButton}
-                onPress={startBluetoothScan}
+                onPress={handleScanButtonPress}
                 disabled={isScanning}
               >
                 <Text style={styles.scanButtonText}>
