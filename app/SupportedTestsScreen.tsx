@@ -12,13 +12,14 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
-import { Feather, FontAwesome5, MaterialIcons } from "@expo/vector-icons";
+import { Feather, FontAwesome5, MaterialIcons, Ionicons } from "@expo/vector-icons";
 
 export default function SupportedTestsScreen() {
   const [searchQuery, setSearchQuery] = useState("");
 
-  // Test data
+  // Test data - Added ECG test
   const tests = [
+    { name: "ECG", icon: "heart-pulse", iconType: "ionicons" },
     { name: "Auscultation (Lungs)", icon: "wind", iconType: "feather" },
     { name: "Auscultation (Heart)", icon: "heart", iconType: "fontAwesome" },
     { name: "Pharyngoscopy", icon: "user-md", iconType: "fontAwesome" },
@@ -46,11 +47,13 @@ export default function SupportedTestsScreen() {
       return <FontAwesome5 name={item.icon} size={32} color={iconColor} />;
     } else if (item.iconType === "material") {
       return <MaterialIcons name={item.icon} size={32} color={iconColor} />;
+    } else if (item.iconType === "ionicons") {
+      return <Ionicons name={item.icon} size={32} color={iconColor} />;
     }
   };
 
   const handleTestSelect = (testName: string) => {
-    // Check if it's an imaging test or auscultation test
+    // Check which test is selected
     if (["Pharyngoscopy", "Otoscopy", "Dermatoscopy"].includes(testName)) {
       router.push({
         pathname: "/imaging",
@@ -59,6 +62,11 @@ export default function SupportedTestsScreen() {
     } else if (testName.startsWith("Auscultation")) {
       router.push({
         pathname: "/auscultation",
+        params: { testName },
+      });
+    } else if (testName === "ECG") {
+      router.push({
+        pathname: "/ecg",
         params: { testName },
       });
     }

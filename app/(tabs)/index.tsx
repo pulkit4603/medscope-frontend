@@ -8,7 +8,7 @@ import {
   TouchableOpacity,
   SafeAreaView,
 } from "react-native";
-import { Feather, FontAwesome5, MaterialIcons } from "@expo/vector-icons";
+import { Feather, FontAwesome5, MaterialIcons, Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 
@@ -27,11 +27,11 @@ export default function HomeScreen() {
 
   // Supported tests data with updated icons that are available in the icon packs
   const supportedTests = [
+    { name: "ECG", icon: "heart-pulse", iconType: "ionicons" },
     { name: "Otoscopy", icon: "hearing", iconType: "material" },
     { name: "Pharyngoscopy", icon: "user-md", iconType: "fontAwesome" },
     { name: "Dermatoscopy", icon: "fingerprint", iconType: "material" },
     { name: "Auscultation (Lungs)", icon: "wind", iconType: "feather" },
-    { name: "Auscultation (Stomach)", icon: "pie-chart", iconType: "feather" },
     { name: "Auscultation (Heart)", icon: "heart", iconType: "fontAwesome" },
   ];
 
@@ -48,6 +48,29 @@ export default function HomeScreen() {
       return <FontAwesome5 name={item.icon} size={24} color={iconColor} />;
     } else if (item.iconType === "material") {
       return <MaterialIcons name={item.icon} size={24} color={iconColor} />;
+    } else if (item.iconType === "ionicons") {
+      return <Ionicons name={item.icon} size={24} color={iconColor} />;
+    }
+  };
+
+  // Handle test selection
+  const handleTestSelect = (testName: string) => {
+    // Check which test is selected
+    if (["Pharyngoscopy", "Otoscopy", "Dermatoscopy"].includes(testName)) {
+      router.push({
+        pathname: "/imaging",
+        params: { testName },
+      });
+    } else if (testName.startsWith("Auscultation")) {
+      router.push({
+        pathname: "/auscultation",
+        params: { testName },
+      });
+    } else if (testName === "ECG") {
+      router.push({
+        pathname: "/ecg",
+        params: { testName },
+      });
     }
   };
 
@@ -101,7 +124,11 @@ export default function HomeScreen() {
 
           <View style={styles.testsGrid}>
             {supportedTests.map((test, index) => (
-              <TouchableOpacity key={index} style={styles.testCard}>
+              <TouchableOpacity 
+                key={index} 
+                style={styles.testCard}
+                onPress={() => handleTestSelect(test.name)}
+              >
                 <LinearGradient
                   colors={["#4A90E2", "#5AC8FA"]}
                   style={styles.gradient}
