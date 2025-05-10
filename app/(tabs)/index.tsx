@@ -8,7 +8,12 @@ import {
   TouchableOpacity,
   SafeAreaView,
 } from "react-native";
-import { Feather, FontAwesome5, MaterialIcons, Ionicons } from "@expo/vector-icons";
+import {
+  Feather,
+  FontAwesome5,
+  MaterialIcons,
+  Ionicons,
+} from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
 
@@ -124,8 +129,8 @@ export default function HomeScreen() {
 
           <View style={styles.testsGrid}>
             {supportedTests.map((test, index) => (
-              <TouchableOpacity 
-                key={index} 
+              <TouchableOpacity
+                key={index}
                 style={styles.testCard}
                 onPress={() => handleTestSelect(test.name)}
               >

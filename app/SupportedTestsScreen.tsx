@@ -12,7 +12,12 @@ import {
 } from "react-native";
 import { LinearGradient } from "expo-linear-gradient";
 import { router } from "expo-router";
-import { Feather, FontAwesome5, MaterialIcons, Ionicons } from "@expo/vector-icons";
+import {
+  Feather,
+  FontAwesome5,
+  MaterialIcons,
+  Ionicons,
+} from "@expo/vector-icons";
 
 export default function SupportedTestsScreen() {
   const [searchQuery, setSearchQuery] = useState("");
