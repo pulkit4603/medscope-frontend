@@ -24,7 +24,7 @@ import axios from "axios";
 import TcpSocket from "react-native-tcp-socket";
 
 // TCP Socket Configuration
-const TCP_HOST = "0.0.0.0";
+const TCP_HOST = "192.168.246.217";
 const TCP_PORT = 8080;
 const BUFFER_SIZE = 4096;
 const TERMINATOR = new Uint8Array([0xff, 0xbb]);
@@ -76,6 +76,7 @@ export default function PharyngoscopyScreen() {
   const [receivedData, setReceivedData] = useState<Uint8Array>(
     new Uint8Array()
   );
+  const [isReceivingData, setIsReceivingData] = useState<boolean>(false);
 
   // Camera reference to access methods
   const cameraRef = useRef<any>(null);
@@ -209,8 +210,8 @@ export default function PharyngoscopyScreen() {
         setClientSocket(socket);
 
         socket.on("data", (data: string | Buffer) => {
-          const uint8Data = data as Uint8Array;
-          console.log("Received data from camera device");
+          const uint8Data = new Uint8Array(data as Buffer);
+          console.log(`Received ${uint8Data.length} bytes from camera`);
           handleReceivedImageData(uint8Data);
         });
 
@@ -253,28 +254,32 @@ export default function PharyngoscopyScreen() {
   // Handle received image data from TCP socket
   const handleReceivedImageData = async (data: Uint8Array) => {
     try {
-      console.log(`Received ${data.length} bytes from camera`);
-
       // Accumulate received data
       const newData = new Uint8Array(receivedData.length + data.length);
       newData.set(receivedData);
       newData.set(data, receivedData.length);
       setReceivedData(newData);
 
-      // Check for terminator
+      console.log(`Received ${data.length} bytes, total: ${newData.length} bytes`);
+
+      // Calculate expected data size and check for terminator
+      const expectedSize = IMAGE_WIDTH * IMAGE_HEIGHT * 2;
       const terminatorIndex = findTerminatorIndex(newData);
 
-      if (terminatorIndex !== -1) {
-        console.log(`Found terminator at index ${terminatorIndex}`);
-        console.log(`Total received data: ${newData.length} bytes`);
+      // Continue receiving until we have enough data AND find terminator
+      if (newData.length >= expectedSize || terminatorIndex !== -1) {
+        console.log(`Received ${newData.length} bytes total`);
+        
+        // Log raw data in hex format (first 16 bytes for debugging)
+        const hexData = Array.from(newData.slice(0, 16))
+          .map(byte => byte.toString(16).padStart(2, '0'))
+          .join(' ');
+        console.log(`Raw data (first 16 bytes): ${hexData}`);
 
-        // Remove 8-byte header and 2-byte terminator
-        // const imageData = newData.slice(8, terminatorIndex);
-        const imageData = newData.slice(8, newData.length - 2);
-
-        console.log(
-          `Image data length after processing: ${imageData.length} bytes`
-        );
+        // Remove 8-byte header and 2-byte terminator (matching Python script)
+        const imageData = newData.slice(8, -2);
+        
+        console.log(`Image data length after processing: ${imageData.length} bytes`);
 
         // Convert to base64 for saving
         const base64String = btoa(
@@ -301,17 +306,6 @@ export default function PharyngoscopyScreen() {
 
         // Clean up temporary file
         await FileSystem.deleteAsync(tempUri);
-      } else {
-        // Check if we've received enough data (safety check)
-        const expectedSize = IMAGE_WIDTH * IMAGE_HEIGHT * 2;
-        if (newData.length >= expectedSize) {
-          console.log(
-            "Received expected amount of data but no terminator found"
-          );
-          // Reset and try again
-          setReceivedData(new Uint8Array());
-          setIsProcessing(false);
-        }
       }
     } catch (error) {
       console.error("Error processing received image data:", error);
@@ -342,6 +336,7 @@ export default function PharyngoscopyScreen() {
     }
 
     setIsProcessing(true);
+    setReceivedData(new Uint8Array()); // Reset data buffer
 
     try {
       console.log("Setting image resolution...");
@@ -356,7 +351,7 @@ export default function PharyngoscopyScreen() {
         const captureCommand = new Uint8Array([0x10]);
         clientSocket.write(captureCommand);
         console.log("Capture command sent, waiting for image data...");
-      }, 500);
+      }, 100);
 
       // The image data will be received via the 'data' event handler
     } catch (error: any) {
