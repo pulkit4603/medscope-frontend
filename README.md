@@ -10,41 +10,30 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npm install
    ```
 
-2. Start the app
+   Then run the following commands:
 
-   ```bash
-    npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
+```npx expo prebuild --clean
+npx expo run:android
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+Must-have dependencies on your machine:
 
-## Learn more
+Node.js + npm/yarn
 
-To learn more about developing your project with Expo, look at the following resources:
+Needed to install & run Expo CLI + JS deps.
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+Expo CLI (comes via npx expo …, no global install needed).
 
-## Join the community
+Java Development Kit (JDK 11 or 17)
 
-Join our community of developers creating universal apps.
+Required for Gradle/Android builds.
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+Android Studio OR just Android SDK & platform-tools
+
+Android SDK (API level = your project’s compileSdkVersion).
+
+Android NDK if you have native deps that require it.
+
+Platform-tools (for adb, so your phone/emulator can receive the build).
+
+Gradle (comes bundled with Android Studio or the Gradle wrapper in android/).
