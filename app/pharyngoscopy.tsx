@@ -24,7 +24,7 @@ import axios from "axios";
 import TcpSocket from "react-native-tcp-socket";
 
 // TCP Socket Configuration
-const TCP_HOST = "192.168.246.217";
+const TCP_HOST = "0.0.0.0";
 const TCP_PORT = 8080;
 const BUFFER_SIZE = 4096;
 const TERMINATOR = new Uint8Array([0xff, 0xbb]);
