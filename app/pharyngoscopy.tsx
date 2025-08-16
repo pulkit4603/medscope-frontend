@@ -24,7 +24,7 @@ import axios from "axios";
 import TcpSocket from "react-native-tcp-socket";
 
 // TCP Socket Configuration
-const TCP_HOST = "192.168.246.217";
+const TCP_HOST = "0.0.0.0";
 const TCP_PORT = 8080;
 const BUFFER_SIZE = 4096;
 const TERMINATOR = new Uint8Array([0xff, 0xbb]);
@@ -260,7 +260,9 @@ export default function PharyngoscopyScreen() {
       newData.set(data, receivedData.length);
       setReceivedData(newData);
 
-      console.log(`Received ${data.length} bytes, total: ${newData.length} bytes`);
+      console.log(
+        `Received ${data.length} bytes, total: ${newData.length} bytes`
+      );
 
       // Calculate expected data size and check for terminator
       const expectedSize = IMAGE_WIDTH * IMAGE_HEIGHT * 2;
@@ -269,17 +271,19 @@ export default function PharyngoscopyScreen() {
       // Continue receiving until we have enough data AND find terminator
       if (newData.length >= expectedSize || terminatorIndex !== -1) {
         console.log(`Received ${newData.length} bytes total`);
-        
+
         // Log raw data in hex format (first 16 bytes for debugging)
         const hexData = Array.from(newData.slice(0, 16))
-          .map(byte => byte.toString(16).padStart(2, '0'))
-          .join(' ');
+          .map((byte) => byte.toString(16).padStart(2, "0"))
+          .join(" ");
         console.log(`Raw data (first 16 bytes): ${hexData}`);
 
         // Remove 8-byte header and 2-byte terminator (matching Python script)
         const imageData = newData.slice(8, -2);
-        
-        console.log(`Image data length after processing: ${imageData.length} bytes`);
+
+        console.log(
+          `Image data length after processing: ${imageData.length} bytes`
+        );
 
         // Convert to base64 for saving
         const base64String = btoa(
