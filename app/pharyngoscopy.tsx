@@ -269,7 +269,8 @@ export default function PharyngoscopyScreen() {
         console.log(`Total received data: ${newData.length} bytes`);
 
         // Remove 8-byte header and 2-byte terminator
-        const imageData = newData.slice(8, terminatorIndex);
+        // const imageData = newData.slice(8, terminatorIndex);
+        const imageData = newData.slice(8, newData.length - 2);
 
         console.log(
           `Image data length after processing: ${imageData.length} bytes`
