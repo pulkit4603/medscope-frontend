@@ -68,7 +68,14 @@ export default function PharyngoscopyScreen() {
   const [selectedImage, setSelectedImage] = useState<ImageItem | null>(null);
   const [modalVisible, setModalVisible] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [tcpSocket, setTcpSocket] = useState<any>(null);
+  const [tcpServer, setTcpServer] = useState<any>(null);
+  const [clientSocket, setClientSocket] = useState<any>(null);
+  const [capturedImageData, setCapturedImageData] = useState<string | null>(
+    null
+  );
+  const [receivedData, setReceivedData] = useState<Uint8Array>(
+    new Uint8Array()
+  );
 
   // Camera reference to access methods
   const cameraRef = useRef<any>(null);
@@ -77,16 +84,18 @@ export default function PharyngoscopyScreen() {
   useEffect(() => {
     const initializeApp = async () => {
       await setupDirectory();
-      console.log("SETUPT WAS CALLED BITCH");
+      console.log("Setup directory completed");
       await loadSavedImages();
-      console.log("LOAD CALLED CUNT");
+      console.log("Saved images loaded");
       initializeTcpSocket();
     };
 
+    initializeApp();
+
     return () => {
       // Cleanup socket on unmount
-      if (tcpSocket) {
-        tcpSocket.destroy();
+      if (tcpServer) {
+        tcpServer.close();
       }
     };
   }, []);
@@ -191,56 +200,53 @@ export default function PharyngoscopyScreen() {
     }
   };
 
-  // Initialize TCP socket connection
+  // Initialize TCP server
   const initializeTcpSocket = () => {
     try {
-      const client = TcpSocket.createConnection(
-        {
-          port: TCP_PORT,
-          host: TCP_HOST,
-        },
-        () => {
-          // Connection callback
-        }
-      );
-
-      client.on("connect", () => {
-        console.log("TCP socket connected to camera device");
+      const server = TcpSocket.createServer(function (socket) {
+        console.log("Client connected:", socket.address());
         setIsConnected(true);
-        setTcpSocket(client);
+        setClientSocket(socket);
 
-        // Set image resolution
-        const resolutionCommand = new Uint8Array([0x01, 0x18]);
-        client.write(resolutionCommand);
-        console.log("Setting image resolution...");
-      });
+        socket.on("data", (data: string | Buffer) => {
+          const uint8Data = data as Uint8Array;
+          console.log("Received data from camera device");
+          handleReceivedImageData(uint8Data);
+        });
 
-      client.on("error", (error: any) => {
-        console.error("TCP socket error:", error);
-        setIsConnected(false);
+        socket.on("error", (error: any) => {
+          console.error("Client socket error:", error);
+          setIsConnected(false);
+          setClientSocket(null);
+        });
+
+        socket.on("close", () => {
+          console.log("Client disconnected");
+          setIsConnected(false);
+          setClientSocket(null);
+        });
+      }).listen({ port: TCP_PORT, host: TCP_HOST });
+
+      server.on("error", (error: any) => {
+        console.error("TCP server error:", error);
         Alert.alert(
-          "Connection Error",
-          "Failed to connect to camera device. Please check if the device is available."
+          "Server Error",
+          "Failed to start TCP server. Please check if the port is available."
         );
       });
 
-      client.on("close", () => {
-        console.log("TCP socket connection closed");
+      server.on("close", () => {
+        console.log("TCP server closed");
         setIsConnected(false);
-        setTcpSocket(null);
+        setTcpServer(null);
+        setClientSocket(null);
       });
 
-      client.on("data", (data: string | Buffer) => {
-        const uint8Data = data as Uint8Array;
-        console.log("Received data from camera device");
-        handleReceivedImageData(uint8Data);
-      });
+      setTcpServer(server);
+      console.log(`TCP server listening on ${TCP_HOST}:${TCP_PORT}`);
     } catch (error) {
-      console.error("Failed to initialize TCP socket:", error);
-      Alert.alert(
-        "Connection Error",
-        "Failed to initialize connection to camera device."
-      );
+      console.error("Failed to initialize TCP server:", error);
+      Alert.alert("Server Error", "Failed to initialize TCP server.");
     }
   };
 
@@ -249,57 +255,84 @@ export default function PharyngoscopyScreen() {
     try {
       console.log(`Received ${data.length} bytes from camera`);
 
-      // Check for terminator and remove header and terminator
-      let imageData = data;
-      const terminatorIndex = imageData.indexOf(TERMINATOR[0]);
+      // Accumulate received data
+      const newData = new Uint8Array(receivedData.length + data.length);
+      newData.set(receivedData);
+      newData.set(data, receivedData.length);
+      setReceivedData(newData);
+
+      // Check for terminator
+      const terminatorIndex = findTerminatorIndex(newData);
+
       if (terminatorIndex !== -1) {
+        console.log(`Found terminator at index ${terminatorIndex}`);
+        console.log(`Total received data: ${newData.length} bytes`);
+
         // Remove 8-byte header and 2-byte terminator
-        imageData = imageData.slice(8, terminatorIndex);
+        const imageData = newData.slice(8, terminatorIndex);
+
+        console.log(
+          `Image data length after processing: ${imageData.length} bytes`
+        );
+
+        // Convert to base64 for saving
+        const base64String = btoa(
+          String.fromCharCode.apply(null, Array.from(imageData))
+        );
+
+        // Create a temporary file to save the image
+        const timestamp = Date.now();
+        const tempFileName = `temp_capture_${timestamp}.jpg`;
+        const tempUri = FileSystem.documentDirectory + tempFileName;
+
+        // Save the image data to a file
+        await FileSystem.writeAsStringAsync(tempUri, base64String, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+
+        console.log("Image saved to temporary file:", tempUri);
+
+        // Reset received data for next capture
+        setReceivedData(new Uint8Array());
+
+        // Process the captured image
+        await processCapturedImage(tempUri);
+
+        // Clean up temporary file
+        await FileSystem.deleteAsync(tempUri);
+      } else {
+        // Check if we've received enough data (safety check)
+        const expectedSize = IMAGE_WIDTH * IMAGE_HEIGHT * 2;
+        if (newData.length >= expectedSize) {
+          console.log(
+            "Received expected amount of data but no terminator found"
+          );
+          // Reset and try again
+          setReceivedData(new Uint8Array());
+          setIsProcessing(false);
+        }
       }
-
-      // Convert to base64 for saving
-      const base64String = btoa(
-        new Uint8Array(imageData).reduce(
-          (data, byte) => data + String.fromCharCode(byte),
-          ""
-        )
-      );
-
-      // Create a temporary file to save the image
-      const timestamp = Date.now();
-      const tempFileName = `temp_capture_${timestamp}.jpg`;
-      const tempUri = FileSystem.documentDirectory + tempFileName;
-
-      // Save the image data to a file
-      await FileSystem.writeAsStringAsync(tempUri, base64String, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
-
-      console.log("Image saved to temporary file:", tempUri);
-
-      // Process the captured image
-      await processCapturedImage(tempUri);
-
-      // Clean up temporary file
-      await FileSystem.deleteAsync(tempUri);
     } catch (error) {
       console.error("Error processing received image data:", error);
       Alert.alert("Error", "Failed to process image from camera device.");
+      setReceivedData(new Uint8Array());
+      setIsProcessing(false);
     }
   };
 
-  // Custom permission denied handler
-  const handlePermissionDenied = () => (
-    <View style={styles.container}>
-      <Text style={styles.message}>
-        Camera access is required for this feature
-      </Text>
-    </View>
-  );
+  // Helper function to find terminator in data
+  const findTerminatorIndex = (data: Uint8Array): number => {
+    for (let i = 0; i < data.length - 1; i++) {
+      if (data[i] === TERMINATOR[0] && data[i + 1] === TERMINATOR[1]) {
+        return i;
+      }
+    }
+    return -1;
+  };
 
   // Handle image capture via TCP socket
   const handleCapture = async () => {
-    if (!isConnected || !tcpSocket) {
+    if (!isConnected || !clientSocket) {
       Alert.alert(
         "Connection Error",
         "Not connected to camera device. Please check the connection."
@@ -310,13 +343,20 @@ export default function PharyngoscopyScreen() {
     setIsProcessing(true);
 
     try {
-      console.log("Sending capture command to camera device...");
+      console.log("Setting image resolution...");
+      // Set image resolution command (0x01, 0x18)
+      const resolutionCommand = new Uint8Array([0x01, 0x18]);
+      clientSocket.write(resolutionCommand);
 
-      // Send capture command (0x10)
-      const captureCommand = new Uint8Array([0x10]);
-      tcpSocket.write(captureCommand);
+      // Small delay before capture command
+      setTimeout(() => {
+        console.log("Sending capture command to camera device...");
+        // Send capture command (0x10)
+        const captureCommand = new Uint8Array([0x10]);
+        clientSocket.write(captureCommand);
+        console.log("Capture command sent, waiting for image data...");
+      }, 500);
 
-      console.log("Capture command sent, waiting for image data...");
       // The image data will be received via the 'data' event handler
     } catch (error: any) {
       console.error("Error sending capture command:", error);
@@ -331,6 +371,9 @@ export default function PharyngoscopyScreen() {
   // Process the captured image through Roboflow API
   const processCapturedImage = async (uri: string) => {
     try {
+      // Set the captured image for display
+      setCapturedImageData(uri);
+
       // Convert image to base64
       const base64 = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
@@ -574,6 +617,18 @@ export default function PharyngoscopyScreen() {
           <View style={styles.processingContainer}>
             <ActivityIndicator size="large" color="#3B82F6" />
             <Text style={styles.processingText}>Analyzing image...</Text>
+          </View>
+        )}
+
+        {/* Captured Image Display */}
+        {capturedImageData && !isProcessing && (
+          <View style={styles.capturedImageContainer}>
+            <Text style={styles.capturedImageTitle}>Recently Captured</Text>
+            <Image
+              source={{ uri: capturedImageData }}
+              style={styles.capturedImage}
+              resizeMode="contain"
+            />
           </View>
         )}
 
@@ -1001,5 +1056,28 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 14,
     color: "#64748B",
+  },
+
+  // Captured image display styles
+  capturedImageContainer: {
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 16,
+    marginHorizontal: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    alignItems: "center",
+  },
+  capturedImageTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#1E293B",
+    marginBottom: 12,
+  },
+  capturedImage: {
+    width: width * 0.8,
+    height: width * 0.8,
+    borderRadius: 8,
   },
 });
