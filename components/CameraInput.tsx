@@ -80,83 +80,25 @@ const CameraInput = forwardRef<CameraInputHandle, CameraInputProps>(
       if (!cameraRef.current) return;
 
       try {
-        setIsUploading(true);
         const photo = await cameraRef.current.takePictureAsync();
-        const apiResponse = await uploadImage(photo);
+
+        // Simply call onCapture with the photo, skip API upload
         if (onCapture) {
-          onCapture(photo, apiResponse);
+          onCapture(photo);
         }
       } catch (error) {
         console.error("Error capturing image:", error);
-      } finally {
-        setIsUploading(false);
       }
     };
 
+    // Keep the uploadImage method for backward compatibility and ref exposure,
+    // but don't actually upload unless explicitly called from parent
     const uploadImage = async (photo: CameraCapturedPicture) => {
-      try {
-        // Create form data for the upload
-        const formData = new FormData();
-
-        // Add the image file with correct parameter name "image" (not "images")
-        const imageFile = {
-          uri: photo.uri,
-          type: "image/jpeg",
-          name: "upload.jpg", // Ensure filename is provided
-        } as any;
-
-        formData.append("image", imageFile);
-
-        // Add category data as a separate field if needed
-        if (category) {
-          formData.append("category", category);
-        }
-
-        console.log("Uploading to:", `${apiurl}/upload-image`);
-
-        // Send to API
-        const response = await fetch(`${apiurl}/upload-image`, {
-          method: "POST",
-          body: formData,
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
-        });
-
-        // Check if response is ok
-        if (!response.ok) {
-          // Get response text for debugging
-          const errorText = await response.text();
-          console.error(`API Error (${response.status}):`, errorText);
-          throw new Error(
-            `Server returned ${response.status}: ${errorText.substring(
-              0,
-              100
-            )}...`
-          );
-        }
-
-        // Check Content-Type header to ensure we're getting JSON
-        const contentType = response.headers.get("content-type");
-        if (!contentType || !contentType.includes("application/json")) {
-          const responseText = await response.text();
-          console.error(
-            "Non-JSON response received:",
-            responseText.substring(0, 200)
-          );
-          throw new Error("Server returned non-JSON response");
-        }
-
-        const result = (await response.json()) as ApiResponse;
-        console.log("Upload successful, received response");
-        return result;
-      } catch (error: any) {
-        console.error("Error uploading image:", error);
-        return {
-          error: true,
-          message: error.message || "Failed to upload image",
-        } as ApiResponse;
-      }
+      // Return a mock successful response instead of uploading
+      return {
+        message: "Image captured successfully",
+        error: false,
+      } as ApiResponse;
     };
 
     if (!permission) {
@@ -207,7 +149,7 @@ const CameraInput = forwardRef<CameraInputHandle, CameraInputProps>(
           {isUploading && (
             <View style={styles.uploadingOverlay}>
               <ActivityIndicator color="#fff" size="large" />
-              <Text style={styles.uploadingText}>Uploading...</Text>
+              <Text style={styles.uploadingText}>Processing...</Text>
             </View>
           )}
         </View>

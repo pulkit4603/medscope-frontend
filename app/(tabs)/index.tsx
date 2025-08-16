@@ -63,7 +63,7 @@ export default function HomeScreen() {
     // Check which test is selected
     if (["Pharyngoscopy", "Otoscopy", "Dermatoscopy"].includes(testName)) {
       router.push({
-        pathname: "/imaging",
+        pathname: "/pharyngoscopy",
         params: { testName },
       });
     } else if (testName.startsWith("Auscultation")) {

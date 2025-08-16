@@ -59,7 +59,7 @@ export default function SupportedTestsScreen() {
 
   const handleTestSelect = (testName: string) => {
     // Check which test is selected
-    if (["Pharyngoscopy", "Otoscopy", "Dermatoscopy"].includes(testName)) {
+    if (["Otoscopy", "Dermatoscopy"].includes(testName)) {
       router.push({
         pathname: "/imaging",
         params: { testName },
@@ -72,6 +72,11 @@ export default function SupportedTestsScreen() {
     } else if (testName === "ECG") {
       router.push({
         pathname: "/ecg",
+        params: { testName },
+      });
+    } else if (testName === "Pharyngoscopy") {
+      router.push({
+        pathname: "/pharyngoscopy",
         params: { testName },
       });
     }
