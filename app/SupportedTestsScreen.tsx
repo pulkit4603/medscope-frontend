@@ -24,7 +24,7 @@ export default function SupportedTestsScreen() {
 
   // Test data - Added ECG test
   const tests = [
-    { name: "ECG", icon: "heart-pulse", iconType: "ionicons" },
+    { name: "ECG", icon: "pulse-outline", iconType: "ionicons" },
     { name: "Auscultation (Lungs)", icon: "wind", iconType: "feather" },
     { name: "Auscultation (Heart)", icon: "heart", iconType: "fontAwesome" },
     { name: "Pharyngoscopy", icon: "user-md", iconType: "fontAwesome" },
@@ -61,7 +61,8 @@ export default function SupportedTestsScreen() {
     // Check which test is selected
     if (["Otoscopy", "Dermatoscopy"].includes(testName)) {
       router.push({
-        pathname: "/imaging",
+        // make this /imaging after making imaging.tsx.back into .tsx again (current error: imagine route not existing)
+        pathname: "/pharyngoscopy",
         params: { testName },
       });
     } else if (testName.startsWith("Auscultation")) {

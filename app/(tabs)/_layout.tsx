@@ -53,7 +53,7 @@ export default function TabLayout() {
           },
         })}
       />
-      <Tabs.Screen
+      {/* <Tabs.Screen
         name="imaging"
         options={{
           title: "Imaging",
@@ -61,7 +61,7 @@ export default function TabLayout() {
             <Feather name="camera" size={24} color={color} />
           ),
         }}
-      />
+      /> */}
       <Tabs.Screen
         name="profile"
         options={{

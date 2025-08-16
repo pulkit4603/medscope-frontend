@@ -38,7 +38,7 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="+not-found" />
         <Stack.Screen name="SupportedTestsScreen" />
-        <Stack.Screen name="imaging" />
+        {/* <Stack.Screen name="imaging" /> */}
         <Stack.Screen name="pharyngoscopy" />
         <Stack.Screen name="auscultation" />
       </Stack>

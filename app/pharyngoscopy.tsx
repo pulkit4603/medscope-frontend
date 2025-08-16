@@ -75,9 +75,13 @@ export default function PharyngoscopyScreen() {
 
   // Setup directory for storing images
   useEffect(() => {
-    setupDirectory();
-    loadSavedImages();
-    initializeTcpSocket();
+    const initializeApp = async () => {
+      await setupDirectory();
+      console.log("SETUPT WAS CALLED BITCH");
+      await loadSavedImages();
+      console.log("LOAD CALLED CUNT");
+      initializeTcpSocket();
+    };
 
     return () => {
       // Cleanup socket on unmount

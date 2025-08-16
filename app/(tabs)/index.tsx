@@ -32,7 +32,7 @@ export default function HomeScreen() {
 
   // Supported tests data with updated icons that are available in the icon packs
   const supportedTests = [
-    { name: "ECG", icon: "heart-pulse", iconType: "ionicons" },
+    { name: "ECG", icon: "pulse-outline", iconType: "ionicons" },
     { name: "Otoscopy", icon: "hearing", iconType: "material" },
     { name: "Pharyngoscopy", icon: "user-md", iconType: "fontAwesome" },
     { name: "Dermatoscopy", icon: "fingerprint", iconType: "material" },
