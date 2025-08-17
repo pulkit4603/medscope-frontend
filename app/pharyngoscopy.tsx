@@ -275,7 +275,7 @@ export default function PharyngoscopyScreen() {
       const terminatorIndex = findTerminatorIndex(newData);
 
       // Continue receiving until we have enough data AND find terminator
-      if (newData.length >= expectedSize && terminatorIndex !== -1) {
+      if (newData.length >= expectedSize || terminatorIndex !== -1) {
         console.log(`Received ${newData.length} bytes total`);
 
         // Log raw data in hex format (first 16 bytes for debugging)
