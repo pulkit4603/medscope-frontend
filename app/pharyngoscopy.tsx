@@ -78,6 +78,8 @@ export default function PharyngoscopyScreen() {
   );
   const [isReceivingData, setIsReceivingData] = useState<boolean>(false);
 
+  // Use ref for accumulating data to avoid stale state issues
+  const receivedDataRef = useRef<Uint8Array>(new Uint8Array());
   // Camera reference to access methods
   const cameraRef = useRef<any>(null);
 
@@ -254,10 +256,14 @@ export default function PharyngoscopyScreen() {
   // Handle received image data from TCP socket
   const handleReceivedImageData = async (data: Uint8Array) => {
     try {
-      // Accumulate received data
-      const newData = new Uint8Array(receivedData.length + data.length);
-      newData.set(receivedData);
-      newData.set(data, receivedData.length);
+      // Accumulate received data using ref (always current)
+      const currentData = receivedDataRef.current;
+      const newData = new Uint8Array(currentData.length + data.length);
+      newData.set(currentData);
+      newData.set(data, currentData.length);
+
+      // Update both ref and state
+      receivedDataRef.current = newData;
       setReceivedData(newData);
 
       console.log(
@@ -269,7 +275,7 @@ export default function PharyngoscopyScreen() {
       const terminatorIndex = findTerminatorIndex(newData);
 
       // Continue receiving until we have enough data AND find terminator
-      if (newData.length >= expectedSize || terminatorIndex !== -1) {
+      if (newData.length >= expectedSize && terminatorIndex !== -1) {
         console.log(`Received ${newData.length} bytes total`);
 
         // Log raw data in hex format (first 16 bytes for debugging)
@@ -303,6 +309,7 @@ export default function PharyngoscopyScreen() {
         console.log("Image saved to temporary file:", tempUri);
 
         // Reset received data for next capture
+        receivedDataRef.current = new Uint8Array();
         setReceivedData(new Uint8Array());
 
         // Process the captured image
@@ -314,6 +321,7 @@ export default function PharyngoscopyScreen() {
     } catch (error) {
       console.error("Error processing received image data:", error);
       Alert.alert("Error", "Failed to process image from camera device.");
+      receivedDataRef.current = new Uint8Array();
       setReceivedData(new Uint8Array());
       setIsProcessing(false);
     }
@@ -340,7 +348,9 @@ export default function PharyngoscopyScreen() {
     }
 
     setIsProcessing(true);
-    setReceivedData(new Uint8Array()); // Reset data buffer
+    // Reset data buffer using both ref and state
+    receivedDataRef.current = new Uint8Array();
+    setReceivedData(new Uint8Array());
 
     try {
       console.log("Setting image resolution...");
