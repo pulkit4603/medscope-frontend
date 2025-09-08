@@ -33,9 +33,12 @@ const IMAGE_HEIGHT = 320;
 
 // Roboflow API key from environment variables (you would need to replace this with your actual key)
 // const ROBOFLOW_API_KEY = Constants.expoConfig?.extra?.roboflowApiKey;
-const ROBOFLOW_API_KEY = "tgcz7uPiEzWZoTPTSfqe";
-const ROBOFLOW_MODEL_ID = "pharyngitis-dataset/3";
-const ROBOFLOW_API_URL = "https://serverless.roboflow.com";
+// const ROBOFLOW_API_KEY = "inside env.local";
+// const ROBOFLOW_MODEL_ID = "pharyngitis-dataset/3";
+// const ROBOFLOW_API_URL = "https://serverless.roboflow.com";
+
+// On Render API
+const RENDER_API_URL = "https://medscope-server.onrender.com/";
 
 interface ImageItem {
   id: string;
@@ -49,11 +52,12 @@ interface ImageItem {
 }
 
 interface ApiResponse {
-  predictions: {
-    class: string;
-    class_id: number;
-    confidence: number;
-  }[];
+  image: string;
+  transformed_image: string;
+  transformed_image_base64: string;
+  prediction: string;
+  confidence: number;
+  recommendation: string;
 }
 
 const IMAGES_DIRECTORY =
@@ -384,30 +388,29 @@ export default function PharyngoscopyScreen() {
       // Set the captured image for display
       setCapturedImageData(uri);
 
-      // Convert image to base64
-      const base64 = await FileSystem.readAsStringAsync(uri, {
-        encoding: FileSystem.EncodingType.Base64,
-      });
+      // Create FormData for multipart upload
+      const formData = new FormData();
+      formData.append("image", {
+        uri: uri,
+        type: "image/jpeg",
+        name: "pharyngoscopy_image.jpg",
+      } as any);
 
       // Log API request details
       console.log("API Request:", {
-        url: `${ROBOFLOW_API_URL}/pharyngitis-dataset/3`,
+        url: `${RENDER_API_URL}/api/upload/pharyngo`,
         method: "POST",
-        params: { api_key: "****" }, // Hide actual API key in logs
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        dataLength: base64.length, // Log length instead of full base64 to avoid console clutter
+        headers: { "Content-Type": "multipart/form-data" },
+        imageUri: uri,
       });
 
-      // Make request to Roboflow API using axios
+      // Make request to render server with multipart form data
       const response = await axios({
         method: "POST",
-        url: `${ROBOFLOW_API_URL}/pharyngitis-dataset/3`,
-        params: {
-          api_key: ROBOFLOW_API_KEY,
-        },
-        data: base64,
+        url: `${RENDER_API_URL}/api/upload/pharyngo`,
+        data: formData,
         headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Type": "multipart/form-data",
         },
       });
 
@@ -418,12 +421,11 @@ export default function PharyngoscopyScreen() {
       setApiResponse(result);
 
       // Process and save the result
-      if (result.predictions && result.predictions.length > 0) {
-        const prediction = result.predictions[0];
-        const isHealthy = prediction.class === "no";
+      if (result.prediction && result.confidence !== undefined) {
+        const isHealthy = result.prediction === "no";
         const diagnosisData = {
-          result: prediction.class,
-          confidence: prediction.confidence,
+          result: result.prediction,
+          confidence: result.confidence,
           isHealthy: isHealthy,
         };
 
