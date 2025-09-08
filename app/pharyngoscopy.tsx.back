@@ -33,12 +33,9 @@ const IMAGE_HEIGHT = 320;
 
 // Roboflow API key from environment variables (you would need to replace this with your actual key)
 // const ROBOFLOW_API_KEY = Constants.expoConfig?.extra?.roboflowApiKey;
-// const ROBOFLOW_API_KEY = "inside env.local";
-// const ROBOFLOW_MODEL_ID = "pharyngitis-dataset/3";
-// const ROBOFLOW_API_URL = "https://serverless.roboflow.com";
-
-// On Render API
-const RENDER_API_URL = "https://medscope-server.onrender.com/";
+const ROBOFLOW_API_KEY = "tgcz7uPiEzWZoTPTSfqe";
+const ROBOFLOW_MODEL_ID = "pharyngitis-dataset/3";
+const ROBOFLOW_API_URL = "https://serverless.roboflow.com";
 
 interface ImageItem {
   id: string;
@@ -52,12 +49,11 @@ interface ImageItem {
 }
 
 interface ApiResponse {
-  image: string;
-  transformed_image: string;
-  transformed_image_base64: string;
-  prediction: string;
-  confidence: number;
-  recommendation: string;
+  predictions: {
+    class: string;
+    class_id: number;
+    confidence: number;
+  }[];
 }
 
 const IMAGES_DIRECTORY =
@@ -77,9 +73,6 @@ export default function PharyngoscopyScreen() {
   const [capturedImageData, setCapturedImageData] = useState<string | null>(
     null
   );
-  const [transformedImageBase64, setTransformedImageBase64] = useState<
-    string | null
-  >(null);
   const [receivedData, setReceivedData] = useState<Uint8Array>(
     new Uint8Array()
   );
@@ -388,31 +381,33 @@ export default function PharyngoscopyScreen() {
   // Process the captured image through Roboflow API
   const processCapturedImage = async (uri: string) => {
     try {
-      // Don't set the captured image for display until we get the API response
+      // Set the captured image for display
+      setCapturedImageData(uri);
 
-      // Create FormData for multipart upload
-      const formData = new FormData();
-      formData.append("image", {
-        uri: uri,
-        type: "image/jpeg",
-        name: "pharyngoscopy_image.jpg",
-      } as any);
+      // Convert image to base64
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
 
       // Log API request details
       console.log("API Request:", {
-        url: `${RENDER_API_URL}/api/upload/pharyngo`,
+        url: `${ROBOFLOW_API_URL}/pharyngitis-dataset/3`,
         method: "POST",
-        headers: { "Content-Type": "multipart/form-data" },
-        imageUri: uri,
+        params: { api_key: "****" }, // Hide actual API key in logs
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        dataLength: base64.length, // Log length instead of full base64 to avoid console clutter
       });
 
-      // Make request to render server with multipart form data
+      // Make request to Roboflow API using axios
       const response = await axios({
         method: "POST",
-        url: `${RENDER_API_URL}/api/upload/pharyngo`,
-        data: formData,
+        url: `${ROBOFLOW_API_URL}/pharyngitis-dataset/3`,
+        params: {
+          api_key: ROBOFLOW_API_KEY,
+        },
+        data: base64,
         headers: {
-          "Content-Type": "multipart/form-data",
+          "Content-Type": "application/x-www-form-urlencoded",
         },
       });
 
@@ -422,22 +417,13 @@ export default function PharyngoscopyScreen() {
       const result: ApiResponse = response.data;
       setApiResponse(result);
 
-      // Store the transformed image base64 for display
-      if (result.transformed_image_base64) {
-        setTransformedImageBase64(result.transformed_image_base64);
-        // Set the captured image for display using the transformed base64 image
-        setCapturedImageData(result.transformed_image_base64);
-      } else {
-        // Fallback to original image if no transformed image is available
-        setCapturedImageData(uri);
-      }
-
       // Process and save the result
-      if (result.prediction && result.confidence !== undefined) {
-        const isHealthy = result.prediction === "no";
+      if (result.predictions && result.predictions.length > 0) {
+        const prediction = result.predictions[0];
+        const isHealthy = prediction.class === "no";
         const diagnosisData = {
-          result: result.prediction,
-          confidence: result.confidence,
+          result: prediction.class,
+          confidence: prediction.confidence,
           isHealthy: isHealthy,
         };
 
@@ -649,11 +635,7 @@ export default function PharyngoscopyScreen() {
           <View style={styles.capturedImageContainer}>
             <Text style={styles.capturedImageTitle}>Recently Captured</Text>
             <Image
-              source={{
-                uri: capturedImageData.startsWith("data:")
-                  ? capturedImageData
-                  : `data:image/jpeg;base64,${capturedImageData}`,
-              }}
+              source={{ uri: capturedImageData }}
               style={styles.capturedImage}
               resizeMode="contain"
             />
