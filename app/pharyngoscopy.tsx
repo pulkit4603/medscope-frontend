@@ -38,7 +38,7 @@ const IMAGE_HEIGHT = 320;
 // const ROBOFLOW_API_URL = "https://serverless.roboflow.com";
 
 // On Render API
-const RENDER_API_URL = "https://medscope-server.onrender.com/";
+const RENDER_API_URL = "https://medscope-server.onrender.com";
 
 interface ImageItem {
   id: string;
