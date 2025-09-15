@@ -1,505 +1,560 @@
-import React, { useState, useEffect, useRef } from "react";
+// filepath: /home/pulkit/dev/projects/team/major-project/medscope-frontend/app/auscultation.tsx
+import React, { useState, useRef, useEffect } from "react";
 import {
-  View,
-  Text,
   StyleSheet,
+  Text,
+  View,
   TouchableOpacity,
   SafeAreaView,
   StatusBar,
   Platform,
   ScrollView,
-  FlatList,
+  Modal,
+  Dimensions,
   Alert,
   ActivityIndicator,
-  Modal,
-  PermissionsAndroid,
 } from "react-native";
-import { Feather } from "@expo/vector-icons";
 import { useLocalSearchParams, router } from "expo-router";
-import { LinearGradient } from "expo-linear-gradient";
-import { Audio } from "expo-av";
+import { Feather } from "@expo/vector-icons";
 import * as FileSystem from "expo-file-system";
-import * as Haptics from "expo-haptics";
-import { audioApiUrl } from "@/constants/api";
+import { Audio } from "expo-av";
+import { Asset } from "expo-asset";
+import axios from "axios";
+// @ts-ignore
+import TcpSocket from "react-native-tcp-socket";
 
-// Bluetooth device type
-interface BluetoothDevice {
+// TCP Socket Configuration
+const TCP_HOST = "0.0.0.0";
+const TCP_PORT = 8081; // Different port from pharyngoscopy
+const AUSCULTATION_API_URL = "https://h3rsh-Heart.hf.space/predict";
+
+// Audio storage directory
+const AUDIO_DIRECTORY = FileSystem.documentDirectory + "medscope-auscultation/";
+
+interface AudioItem {
   id: string;
-  name: string;
-  isConnected: boolean;
+  uri: string;
+  timestamp: number;
+  duration?: number;
+  analysis?: {
+    label: "Normal" | "Abnormal";
+    confidence: number;
+    probabilities: {
+      Normal: number;
+      Abnormal: number;
+    };
+    status: string;
+  };
 }
 
-// Response type from the API
-interface AnalysisResponse {
-  isHealthy: boolean;
+interface ApiResponse {
+  label: "Normal" | "Abnormal";
   confidence: number;
-  description: string;
-}
-
-// Initialize the BLE manager conditionally to avoid the "createClient of null" error
-let bleManager: any = null;
-
-// Only import and initialize BleManager on actual devices, not in simulator/web
-if (Platform.OS === "android" || Platform.OS === "ios") {
-  try {
-    const { BleManager } = require("react-native-ble-plx");
-    bleManager = new BleManager();
-    console.log("BLE Manager initialized successfully");
-  } catch (error) {
-    console.error("Error initializing BLE Manager:", error);
-  }
+  probabilities: {
+    Normal: number;
+    Abnormal: number;
+  };
+  status: string;
+  debug_info?: any;
 }
 
 export default function AuscultationScreen() {
   const { testName } = useLocalSearchParams<{ testName: string }>();
 
-  // State for Bluetooth functionality
-  const [isBluetoothEnabled, setIsBluetoothEnabled] = useState<boolean>(false);
-  const [isScanning, setIsScanning] = useState<boolean>(false);
-  const [devices, setDevices] = useState<BluetoothDevice[]>([]);
-  const [connectedDevice, setConnectedDevice] =
-    useState<BluetoothDevice | null>(null);
+  // State for TCP connection
+  const [isConnected, setIsConnected] = useState<boolean>(false);
+  const [tcpServer, setTcpServer] = useState<any>(null);
+  const [clientSocket, setClientSocket] = useState<any>(null);
 
-  // State for audio recording
-  const [recording, setRecording] = useState<Audio.Recording | null>(null);
-  const [isRecording, setIsRecording] = useState<boolean>(false);
-  const [recordingDuration, setRecordingDuration] = useState<number>(0);
-  const durationTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [audioUri, setAudioUri] = useState<string | null>(null);
-
-  // State for analysis
-  const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResponse | null>(
-    null
+  // State for audio recording and analysis
+  const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const [storedAudioFiles, setStoredAudioFiles] = useState<AudioItem[]>([]);
+  const [selectedAudio, setSelectedAudio] = useState<AudioItem | null>(null);
+  const [modalVisible, setModalVisible] = useState<boolean>(false);
+  const [receivedAudioData, setReceivedAudioData] = useState<Uint8Array>(
+    new Uint8Array()
   );
-  const [showResultModal, setShowResultModal] = useState<boolean>(false);
+  const [isReceivingData, setIsReceivingData] = useState<boolean>(false);
+  const [currentAudioIndex, setCurrentAudioIndex] = useState<number>(0);
 
-  // Effect to clean up resources
+  // Audio files in the specified order
+  const audioFiles = [
+    { name: "abnormal1.wav", path: require("../assets/audio/abnormal1.wav") },
+    { name: "abnormal2.wav", path: require("../assets/audio/abnormal2.wav") },
+    { name: "normal1.wav", path: require("../assets/audio/normal1.wav") },
+    { name: "normal2.wav", path: require("../assets/audio/normal2.wav") },
+  ];
+
+  // Use ref for accumulating audio data
+  const receivedAudioDataRef = useRef<Uint8Array>(new Uint8Array());
+
+  // Setup directory and initialize TCP server
   useEffect(() => {
+    const initializeApp = async () => {
+      await setupDirectory();
+      console.log("Audio directory setup completed");
+      await loadSavedAudioFiles();
+      console.log("Saved audio files loaded");
+      initializeTcpSocket();
+    };
+
+    initializeApp();
+
     return () => {
-      if (durationTimerRef.current) {
-        clearInterval(durationTimerRef.current);
-      }
-
-      // Stop scanning when component unmounts
-      if (bleManager) {
-        bleManager.stopDeviceScan();
-      }
-
-      // Destroy BLE manager when component unmounts
-      if (bleManager) {
-        bleManager.destroy();
+      // Cleanup socket on unmount
+      if (tcpServer) {
+        tcpServer.close();
       }
     };
   }, []);
 
-  // Request permissions
-  useEffect(() => {
-    (async () => {
-      // Request audio recording permissions
-      const { status } = await Audio.requestPermissionsAsync();
-      if (status !== "granted") {
-        Alert.alert(
-          "Permission Denied",
-          "Please grant microphone permissions to use this feature."
-        );
-      }
+  const setupDirectory = async () => {
+    const dirInfo = await FileSystem.getInfoAsync(AUDIO_DIRECTORY);
+    if (!dirInfo.exists) {
+      await FileSystem.makeDirectoryAsync(AUDIO_DIRECTORY, {
+        intermediates: true,
+      });
+    }
+  };
 
-      // Request Bluetooth permissions for Android
-      if (Platform.OS === "android") {
-        try {
-          const apiLevel = Platform.Version;
-
-          // For Android 12+ (API level 31+)
-          if (apiLevel >= 31) {
-            const results = await PermissionsAndroid.requestMultiple([
-              PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-              PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-              PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-            ]);
-
-            const isGranted = Object.values(results).every(
-              (result) => result === PermissionsAndroid.RESULTS.GRANTED
-            );
-
-            if (!isGranted) {
-              Alert.alert(
-                "Bluetooth Permission Denied",
-                "This app requires Bluetooth scanning and connection permissions."
-              );
-            }
-          }
-          // For older Android versions
-          else {
-            const granted = await PermissionsAndroid.request(
-              PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-              {
-                title: "Location Permission",
-                message: "Bluetooth scanning requires location permission",
-                buttonPositive: "OK",
-              }
-            );
-
-            if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-              Alert.alert(
-                "Permission Denied",
-                "Location permission is required for Bluetooth scanning."
-              );
-            }
-          }
-        } catch (error) {
-          console.error("Permission request error:", error);
-        }
-      }
-    })();
-  }, []);
-
-  // Start actual Bluetooth scanning
-  const startBluetoothScan = async () => {
+  const loadSavedAudioFiles = async () => {
     try {
-      // Check if BLE manager is available
-      if (!bleManager) {
-        Alert.alert(
-          "Bluetooth Not Available",
-          "Bluetooth functionality is not available on this device or environment.",
-          [{ text: "OK" }]
-        );
-        return;
-      }
+      const files = await FileSystem.readDirectoryAsync(AUDIO_DIRECTORY);
+      const audioFiles = files.filter(
+        (filename) => !filename.endsWith(".meta.json")
+      );
 
-      setIsScanning(true);
-      setIsBluetoothEnabled(true);
-      setDevices([]);
+      const audioItems = await Promise.all(
+        audioFiles.map(async (filename) => {
+          const fileUri = AUDIO_DIRECTORY + filename;
+          const metadataPath = fileUri + ".meta.json";
 
-      // Check if Bluetooth is powered on
-      const state = await bleManager.state();
-      if (state !== "PoweredOn") {
-        Alert.alert(
-          "Bluetooth not enabled",
-          "Please enable Bluetooth to scan for devices.",
-          [{ text: "OK", onPress: () => setIsScanning(false) }]
-        );
-        return;
-      }
-
-      // Start scanning with timeout
-      bleManager.startDeviceScan(null, null, (error: any, device: any) => {
-        if (error) {
-          console.error("Bluetooth scan error:", error);
-          Alert.alert("Scan Error", error.message);
-          setIsScanning(false);
-          return;
-        }
-
-        if (device && device.name) {
-          // Add device if not already in the list
-          setDevices((prevDevices) => {
-            const deviceExists = prevDevices.some((d) => d.id === device.id);
-            if (!deviceExists) {
-              return [
-                ...prevDevices,
-                {
-                  id: device.id,
-                  name: device.name || "Unknown Device",
-                  isConnected: false,
-                },
-              ];
+          // Try to load analysis from metadata file
+          let analysis = undefined;
+          let duration = undefined;
+          try {
+            const metadataExists = await FileSystem.getInfoAsync(metadataPath);
+            if (metadataExists.exists) {
+              const metadataContent = await FileSystem.readAsStringAsync(
+                metadataPath
+              );
+              const metadata = JSON.parse(metadataContent);
+              analysis = metadata.analysis;
+              duration = metadata.duration;
             }
-            return prevDevices;
-          });
-        }
+          } catch (e) {
+            console.log("No analysis found for", filename);
+          }
+
+          const timestamp = parseInt(
+            filename.split("_")[1] || Date.now().toString()
+          );
+          return {
+            id: filename,
+            uri: fileUri,
+            timestamp: timestamp,
+            duration: duration,
+            analysis: analysis,
+          };
+        })
+      );
+
+      // Sort by timestamp (newest first)
+      setStoredAudioFiles(audioItems.sort((a, b) => b.timestamp - a.timestamp));
+    } catch (error) {
+      console.error("Failed to load audio files:", error);
+    }
+  };
+
+  const saveAudioToDevice = async (
+    uri: string,
+    duration?: number,
+    analysisData?: ApiResponse
+  ) => {
+    try {
+      const timestamp = Date.now();
+      const newFilename = `auscultation_${timestamp}.wav`;
+      const newUri = AUDIO_DIRECTORY + newFilename;
+
+      // Save the audio file
+      await FileSystem.copyAsync({
+        from: uri,
+        to: newUri,
       });
 
-      // Stop scanning after 10 seconds
+      // If we have analysis data, save it to a metadata file
+      if (analysisData || duration) {
+        const metadataPath = newUri + ".meta.json";
+        await FileSystem.writeAsStringAsync(
+          metadataPath,
+          JSON.stringify({
+            analysis: analysisData,
+            duration: duration,
+          })
+        );
+      }
+
+      const newAudio: AudioItem = {
+        id: newFilename,
+        uri: newUri,
+        timestamp,
+        duration: duration,
+        analysis: analysisData,
+      };
+
+      setStoredAudioFiles((prevAudio) => [newAudio, ...prevAudio]);
+      return newAudio;
+    } catch (error) {
+      console.error("Error saving audio:", error);
+      return null;
+    }
+  };
+
+  // Initialize TCP server for audio reception
+  const initializeTcpSocket = () => {
+    try {
+      const server = TcpSocket.createServer(function (socket) {
+        console.log("Audio client connected:", socket.address());
+        setIsConnected(true);
+        setClientSocket(socket);
+
+        socket.on("data", (data: string | Buffer) => {
+          const uint8Data = new Uint8Array(data as Buffer);
+          console.log(`Received ${uint8Data.length} bytes of audio data`);
+          handleReceivedAudioData(uint8Data);
+        });
+
+        socket.on("error", (error: any) => {
+          console.error("Audio client socket error:", error);
+          setIsConnected(false);
+          setClientSocket(null);
+        });
+
+        socket.on("close", () => {
+          console.log("Audio client disconnected");
+          setIsConnected(false);
+          setClientSocket(null);
+        });
+      }).listen({ port: TCP_PORT, host: TCP_HOST });
+
+      server.on("error", (error: any) => {
+        console.error("TCP audio server error:", error);
+        Alert.alert(
+          "Server Error",
+          "Failed to start TCP audio server. Please check if the port is available."
+        );
+      });
+
+      server.on("close", () => {
+        console.log("TCP audio server closed");
+        setIsConnected(false);
+        setTcpServer(null);
+        setClientSocket(null);
+      });
+
+      setTcpServer(server);
+      console.log(`TCP audio server listening on ${TCP_HOST}:${TCP_PORT}`);
+    } catch (error) {
+      console.error("Failed to initialize TCP audio server:", error);
+      Alert.alert("Server Error", "Failed to initialize TCP audio server.");
+    }
+  };
+
+  // Handle received audio data from TCP socket
+  const handleReceivedAudioData = async (data: Uint8Array) => {
+    try {
+      setIsReceivingData(true);
+
+      // Accumulate received data
+      const currentData = receivedAudioDataRef.current;
+      const newData = new Uint8Array(currentData.length + data.length);
+      newData.set(currentData);
+      newData.set(data, currentData.length);
+
+      receivedAudioDataRef.current = newData;
+      setReceivedAudioData(newData);
+
+      console.log(
+        `Received ${data.length} bytes, total: ${newData.length} bytes`
+      );
+
+      // Check for audio file terminator or sufficient data
+      // For simplicity, let's assume we receive the complete audio file in chunks
+      // and process it after a short delay without new data
       setTimeout(() => {
-        if (bleManager) {
-          bleManager.stopDeviceScan();
+        if (receivedAudioDataRef.current.length > 0) {
+          processReceivedAudio();
         }
-        setIsScanning(false);
-      }, 10000);
+      }, 1000); // Wait 1 second for more data
     } catch (error) {
-      console.error("Error during Bluetooth scan:", error);
-      Alert.alert("Bluetooth Error", "Failed to start scanning for devices");
-      setIsScanning(false);
+      console.error("Error processing received audio data:", error);
+      Alert.alert("Error", "Failed to process audio from device.");
+      receivedAudioDataRef.current = new Uint8Array();
+      setReceivedAudioData(new Uint8Array());
+      setIsProcessing(false);
+      setIsReceivingData(false);
     }
   };
 
-  // Connect to a real device
-  const connectToDevice = async (device: BluetoothDevice) => {
+  const processReceivedAudio = async () => {
     try {
-      if (!bleManager) {
-        Alert.alert(
-          "Bluetooth Not Available",
-          "Cannot connect to device because Bluetooth is not available"
-        );
+      const audioData = receivedAudioDataRef.current;
+
+      if (audioData.length === 0) {
+        console.log("No audio data to process");
         return;
       }
 
-      setIsScanning(false);
-      bleManager.stopDeviceScan();
+      console.log(`Processing ${audioData.length} bytes of audio data`);
 
-      // Show connecting status
-      const updatedDevices = devices.map((d) =>
-        d.id === device.id ? { ...d, isConnecting: true } : d
+      // Convert to base64 for saving
+      const base64String = btoa(
+        String.fromCharCode.apply(null, Array.from(audioData))
       );
-      setDevices(updatedDevices);
 
-      // Connect to the device
-      const connectedDeviceObj = await bleManager.connectToDevice(device.id);
-      console.log("Connected to:", connectedDeviceObj.name);
+      // Create a temporary file to save the audio
+      const timestamp = Date.now();
+      const tempFileName = `temp_audio_${timestamp}.wav`;
+      const tempUri = FileSystem.documentDirectory + tempFileName;
 
-      // Discover services and characteristics
-      await connectedDeviceObj.discoverAllServicesAndCharacteristics();
-
-      // Update the devices list
-      const connectedDevices = devices.map((d) =>
-        d.id === device.id
-          ? { ...d, isConnected: true }
-          : { ...d, isConnected: false }
-      );
-      setDevices(connectedDevices);
-      setConnectedDevice({ ...device, isConnected: true });
-
-      // Provide haptic feedback on successful connection
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error) {
-      console.error("Connection error:", error);
-      Alert.alert("Connection Error", "Failed to connect to the device");
-
-      // Reset connecting status
-      const resetDevices = devices.map((d) =>
-        d.id === device.id ? { ...d, isConnecting: false } : d
-      );
-      setDevices(resetDevices);
-    }
-  };
-
-  // Disconnect from device
-  const disconnectDevice = async () => {
-    if (!connectedDevice || !bleManager) return;
-
-    try {
-      await bleManager.cancelDeviceConnection(connectedDevice.id);
-      setConnectedDevice(null);
-      setDevices(devices.map((d) => ({ ...d, isConnected: false })));
-
-      // Provide haptic feedback
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-    } catch (error) {
-      console.error("Disconnect error:", error);
-      Alert.alert("Disconnect Error", "Failed to disconnect from the device");
-    }
-  };
-
-  // Start recording
-  const startRecording = async () => {
-    try {
-      // Configure audio recording
-      await Audio.setAudioModeAsync({
-        allowsRecordingIOS: true,
-        playsInSilentModeIOS: true,
+      // Save the audio data to a file
+      await FileSystem.writeAsStringAsync(tempUri, base64String, {
+        encoding: FileSystem.EncodingType.Base64,
       });
 
-      // Prepare the recording
-      const { recording } = await Audio.Recording.createAsync(
-        Audio.RecordingOptionsPresets.HIGH_QUALITY
-      );
+      console.log("Audio saved to temporary file:", tempUri);
 
-      setRecording(recording);
-      setIsRecording(true);
-      setRecordingDuration(0);
+      // Reset received data for next capture
+      receivedAudioDataRef.current = new Uint8Array();
+      setReceivedAudioData(new Uint8Array());
+      setIsReceivingData(false);
 
-      // Start duration timer
-      durationTimerRef.current = setInterval(() => {
-        setRecordingDuration((prev) => prev + 1);
-      }, 1000);
+      // Process the captured audio
+      await processCapturedAudio(tempUri);
 
-      // Provide haptic feedback
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      // Clean up temporary file
+      await FileSystem.deleteAsync(tempUri);
     } catch (error) {
-      console.error("Failed to start recording", error);
-      Alert.alert(
-        "Recording Error",
-        "Failed to start recording. Please try again."
-      );
+      console.error("Error processing received audio:", error);
+      setIsReceivingData(false);
     }
   };
 
-  // Stop recording
-  const stopRecording = async () => {
-    if (!recording) return;
+  // Handle audio capture - always use real audio from assets
+  const handleCapture = async () => {
+    // Always use the real audio file from assets
+    await useMockAudioCapture();
+  };
 
+  // Audio capture using real audio file from assets
+  const useMockAudioCapture = async () => {
     try {
-      // Stop the recording
-      await recording.stopAndUnloadAsync();
+      setIsProcessing(true);
 
-      // Stop the timer
-      if (durationTimerRef.current) {
-        clearInterval(durationTimerRef.current);
-        durationTimerRef.current = null;
+      // Get current audio file
+      const currentAudioFile = audioFiles[currentAudioIndex];
+      console.log(
+        `Loading audio file: ${currentAudioFile.name} (index: ${currentAudioIndex})`
+      );
+
+      // Load the real audio file from assets using Expo Asset
+      const asset = Asset.fromModule(currentAudioFile.path);
+      await asset.downloadAsync();
+
+      // Create a temporary file to copy the asset to
+      const timestamp = Date.now();
+      const tempFileName = `audio_${timestamp}.wav`;
+      const tempUri = FileSystem.documentDirectory + tempFileName;
+
+      // Copy the asset file to the temporary location
+      await FileSystem.copyAsync({
+        from: asset.localUri || asset.uri,
+        to: tempUri,
+      });
+
+      console.log(
+        `Audio file ${currentAudioFile.name} loaded from assets:`,
+        tempUri
+      );
+
+      // Process the real audio file
+      await processCapturedAudio(tempUri);
+
+      // Move to next audio file for next capture (cycle through the array)
+      setCurrentAudioIndex((prevIndex) => (prevIndex + 1) % audioFiles.length);
+
+      // Clean up
+      await FileSystem.deleteAsync(tempUri);
+    } catch (error) {
+      console.error("Error loading audio from assets:", error);
+      Alert.alert(
+        "Error",
+        "Failed to load audio file from assets. Please ensure the audio files exist in assets/audio/ folder"
+      );
+      setIsProcessing(false);
+    }
+  };
+
+  // Process the captured audio through the API
+  const processCapturedAudio = async (uri: string) => {
+    try {
+      // Create FormData for multipart upload
+      const formData = new FormData();
+      formData.append("file", {
+        uri: uri,
+        type: "audio/wav",
+        name: "sample_heart_sound.wav",
+      } as any);
+
+      console.log("API Request:", {
+        url: AUSCULTATION_API_URL,
+        method: "POST",
+        headers: { "Content-Type": "multipart/form-data" },
+        audioUri: uri,
+      });
+
+      // Make request to the API
+      const response = await axios({
+        method: "POST",
+        url: AUSCULTATION_API_URL,
+        data: formData,
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+        timeout: 30000, // 30 second timeout
+      });
+
+      console.log("API Response:", response.data);
+
+      const result: ApiResponse = response.data;
+
+      // Save the audio with analysis results
+      const savedAudio = await saveAudioToDevice(uri, undefined, result);
+      if (savedAudio) {
+        setSelectedAudio(savedAudio);
+        setModalVisible(true);
+      }
+    } catch (error) {
+      console.error("API Error:", error);
+      Alert.alert(
+        "API Error",
+        "Failed to analyze audio. Please check your internet connection and try again."
+      );
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleAudioPress = (audio: AudioItem) => {
+    setSelectedAudio(audio);
+    setModalVisible(true);
+  };
+
+  // Confirm before deleting an audio file
+  const confirmDelete = (audioItem: AudioItem) => {
+    Alert.alert(
+      "Delete Audio",
+      "Are you sure you want to delete this audio recording?",
+      [
+        {
+          text: "Cancel",
+          style: "cancel",
+        },
+        {
+          text: "Delete",
+          onPress: () => deleteAudio(audioItem),
+          style: "destructive",
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
+  // Delete an audio file and its metadata
+  const deleteAudio = async (audioItem: AudioItem) => {
+    try {
+      // Delete the audio file
+      await FileSystem.deleteAsync(audioItem.uri);
+
+      // Try to delete metadata file if it exists
+      const metadataPath = audioItem.uri + ".meta.json";
+      const metadataInfo = await FileSystem.getInfoAsync(metadataPath);
+      if (metadataInfo.exists) {
+        await FileSystem.deleteAsync(metadataPath);
       }
 
-      // Get the recording URI
-      const uri = recording.getURI();
-      setAudioUri(uri);
-      setIsRecording(false);
-      setRecording(null);
-
-      // Provide haptic feedback
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch (error) {
-      console.error("Failed to stop recording", error);
-      Alert.alert(
-        "Recording Error",
-        "Failed to stop recording. Please try again."
+      // Remove the audio from the state
+      setStoredAudioFiles((current) =>
+        current.filter((item) => item.id !== audioItem.id)
       );
+
+      // Close the modal if it was open
+      setModalVisible(false);
+      setSelectedAudio(null);
+    } catch (error) {
+      console.error("Failed to delete audio:", error);
+      Alert.alert("Error", "Failed to delete the audio recording");
     }
   };
 
-  // Format seconds to mm:ss
-  const formatDuration = (seconds: number) => {
+  // Format duration in seconds to mm:ss
+  const formatDuration = (seconds?: number) => {
+    if (!seconds) return "Unknown";
     const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
+    const secs = Math.floor(seconds % 60);
     return `${mins.toString().padStart(2, "0")}:${secs
       .toString()
       .padStart(2, "0")}`;
   };
 
-  // Upload and analyze the recording
-  const analyzeRecording = async () => {
-    if (!audioUri) return;
+  // Render previous audio recordings
+  const renderPreviousAudioFiles = () => {
+    if (storedAudioFiles.length === 0) return null;
 
-    setIsAnalyzing(true);
-
-    try {
-      const formData = new FormData();
-
-      // Add the audio file
-      const fileInfo = await FileSystem.getInfoAsync(audioUri);
-
-      const audioFile = {
-        uri: audioUri,
-        name: "audio_recording.wav",
-        type: "audio/wav",
-      } as any;
-
-      formData.append("audio", audioFile);
-
-      // Add metadata if needed
-      if (testName) {
-        formData.append("testType", testName);
-      }
-
-      // Make the request to the server
-      const response = await fetch(audioApiUrl, {
-        method: "POST",
-        body: formData,
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-
-      if (!response.ok) {
-        throw new Error(`Server returned ${response.status}`);
-      }
-
-      // Parse the response
-      const result = await response.json();
-      setAnalysisResult(result);
-      setShowResultModal(true);
-    } catch (error) {
-      console.error("Analysis error:", error);
-
-      // For demo purposes, create a mock result if the API is not available
-      const mockResult: AnalysisResponse = {
-        isHealthy: Math.random() > 0.3, // 70% chance of being healthy
-        confidence: Math.floor(Math.random() * 30) + 70, // 70-99%
-        description:
-          Math.random() > 0.3
-            ? "Normal heart sounds detected with regular rhythm. No murmurs or abnormal sounds identified."
-            : "Possible abnormal sounds detected. Slight irregularity in rhythm with potential mid-systolic murmur.",
-      };
-
-      setAnalysisResult(mockResult);
-      setShowResultModal(true);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
-  // Render device list item
-  const renderDeviceItem = ({ item }: { item: BluetoothDevice }) => (
-    <TouchableOpacity
-      style={[
-        styles.deviceItem,
-        item.isConnected && styles.connectedDeviceItem,
-      ]}
-      onPress={() => connectToDevice(item)}
-      disabled={item.isConnected}
-    >
-      <View style={styles.deviceInfo}>
-        <Text style={styles.deviceName}>{item.name}</Text>
-        <Text style={styles.deviceId}>ID: {item.id}</Text>
+    return (
+      <View style={styles.previousAudioContainer}>
+        <Text style={styles.previousAudioTitle}>Previous Recordings</Text>
+        <ScrollView
+          style={styles.audioListContainer}
+          contentContainerStyle={styles.audioListContent}
+        >
+          {storedAudioFiles.map((audio) => (
+            <TouchableOpacity
+              key={audio.id}
+              style={styles.audioItem}
+              onPress={() => handleAudioPress(audio)}
+            >
+              <View style={styles.audioIconContainer}>
+                <Feather name="volume-2" size={24} color="#3B82F6" />
+              </View>
+              <View style={styles.audioInfo}>
+                <Text style={styles.audioFileName}>
+                  {new Date(audio.timestamp).toLocaleDateString()}{" "}
+                  {new Date(audio.timestamp).toLocaleTimeString()}
+                </Text>
+                <Text style={styles.audioDuration}>
+                  Duration: {formatDuration(audio.duration)}
+                </Text>
+                {audio.analysis && (
+                  <View
+                    style={[
+                      styles.analysisIndicator,
+                      audio.analysis.label === "Normal"
+                        ? styles.healthyIndicator
+                        : styles.abnormalIndicator,
+                    ]}
+                  >
+                    <Text style={styles.analysisIndicatorText}>
+                      {audio.analysis.label}
+                    </Text>
+                  </View>
+                )}
+              </View>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
       </View>
-
-      <View style={styles.deviceStatus}>
-        {item.isConnected ? (
-          <View style={styles.connectedIndicator}>
-            <Feather name="check-circle" size={16} color="#22C55E" />
-            <Text style={styles.connectedText}>Connected</Text>
-          </View>
-        ) : (
-          <View style={styles.connectButton}>
-            <Text style={styles.connectButtonText}>Connect</Text>
-          </View>
-        )}
-      </View>
-    </TouchableOpacity>
-  );
-
-  // Add mock device functionality for demo purposes when real Bluetooth isn't available
-  const useMockDevices = () => {
-    setIsScanning(true);
-    setIsBluetoothEnabled(true);
-    setDevices([]);
-
-    // Simulate delay in finding devices
-    setTimeout(() => {
-      const mockDevices: BluetoothDevice[] = [
-        {
-          id: "00:11:22:33:44:55",
-          name: "Mock Stethoscope",
-          isConnected: false,
-        },
-        {
-          id: "AA:BB:CC:DD:EE:FF",
-          name: "Mock AuscultTech 3000",
-          isConnected: false,
-        },
-        {
-          id: "12:34:56:78:90:AB",
-          name: "Demo Medical Device",
-          isConnected: false,
-        },
-      ];
-      setDevices(mockDevices);
-      setIsScanning(false);
-    }, 2000);
-  };
-
-  // Modify the scan button press handler
-  const handleScanButtonPress = () => {
-    if (Platform.OS === "web" || !bleManager) {
-      // Use mock devices for web or when BLE isn't available
-      useMockDevices();
-      Alert.alert(
-        "Demo Mode",
-        "Running in demo mode with mock devices because Bluetooth is not available in this environment."
-      );
-    } else {
-      // Use actual Bluetooth scanning
-      startBluetoothScan();
-    }
+    );
   };
 
   return (
@@ -517,294 +572,196 @@ export default function AuscultationScreen() {
         <View style={styles.titleContainer}>
           <Text style={styles.title}>{testName || "Auscultation"}</Text>
           <Text style={styles.subtitle}>
-            {connectedDevice
-              ? `Connected to ${connectedDevice.name}`
-              : "Connect to your auscultation device"}
+            Capture heart/lung sounds for analysis
           </Text>
         </View>
       </View>
 
       <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.contentContainer}
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
       >
-        {/* Connection Section */}
-        {!connectedDevice ? (
-          <View style={styles.connectionSection}>
-            <LinearGradient
-              colors={["#3B82F6", "#2563EB"]}
-              style={styles.connectionCard}
-            >
-              <Feather name="bluetooth" size={40} color="#fff" />
-              <Text style={styles.connectionCardTitle}>Connect Device</Text>
-              <Text style={styles.connectionCardText}>
-                Connect your stethoscope or auscultation device to begin
-                recording
-              </Text>
+        {/* Guidance section */}
+        <View style={styles.guidanceContainer}>
+          <Text style={styles.guidanceTitle}>Auscultation Guidance</Text>
+          <Text style={styles.guidanceText}>
+            Place the stethoscope on the appropriate area (chest for heart
+            sounds, back/chest for lung sounds). Ensure a quiet environment and
+            steady positioning during recording.
+          </Text>
+        </View>
 
-              <TouchableOpacity
-                style={styles.scanButton}
-                onPress={handleScanButtonPress}
-                disabled={isScanning}
-              >
-                <Text style={styles.scanButtonText}>
-                  {isScanning ? "Scanning..." : "Scan for Devices"}
-                </Text>
-                {isScanning && (
-                  <ActivityIndicator color="#fff" style={{ marginLeft: 8 }} />
-                )}
-              </TouchableOpacity>
-            </LinearGradient>
-
-            {/* Device List */}
-            {isBluetoothEnabled && (
-              <View style={styles.devicesContainer}>
-                <View style={styles.devicesHeader}>
-                  <Text style={styles.devicesTitle}>Available Devices</Text>
-                  {isScanning && <ActivityIndicator color="#3B82F6" />}
-                </View>
-
-                {devices.length > 0 ? (
-                  <FlatList
-                    data={devices}
-                    renderItem={renderDeviceItem}
-                    keyExtractor={(item) => item.id}
-                    style={styles.devicesList}
-                    contentContainerStyle={styles.devicesListContent}
-                    scrollEnabled={false}
-                  />
-                ) : !isScanning ? (
-                  <View style={styles.noDevicesMessage}>
-                    <Feather name="info" size={20} color="#64748B" />
-                    <Text style={styles.noDevicesText}>
-                      No devices found. Make sure your device is powered on and
-                      in pairing mode.
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-            )}
-          </View>
-        ) : (
-          <View style={styles.recordingSection}>
-            {/* Connected Device Info */}
-            <View style={styles.connectedDeviceInfo}>
-              <View style={styles.deviceIconContainer}>
-                <Feather name="activity" size={28} color="#3B82F6" />
-              </View>
-              <View style={styles.connectedDeviceDetails}>
-                <Text style={styles.connectedDeviceName}>
-                  {connectedDevice.name}
-                </Text>
-                <View style={styles.connectedStatusIndicator}>
-                  <View style={styles.statusDot} />
-                  <Text style={styles.connectedStatusText}>Connected</Text>
-                </View>
-              </View>
-              <TouchableOpacity
-                style={styles.disconnectButton}
-                onPress={disconnectDevice}
-              >
-                <Feather name="x" size={20} color="#64748B" />
-              </TouchableOpacity>
-            </View>
-
-            {/* Recording UI */}
-            <LinearGradient
-              colors={["#F1F5F9", "#E2E8F0"]}
-              style={styles.recordingCard}
-            >
-              <View style={styles.recordingVisual}>
-                <View
-                  style={[
-                    styles.recordingIndicator,
-                    isRecording && styles.recordingActive,
-                  ]}
-                />
-
-                <View style={styles.durationContainer}>
-                  <Text style={styles.durationText}>
-                    {formatDuration(recordingDuration)}
+        {/* Capture section */}
+        <View style={styles.captureContainer}>
+          <TouchableOpacity
+            style={styles.captureButton}
+            onPress={handleCapture}
+            disabled={isProcessing || isReceivingData}
+          >
+            <View style={styles.captureButtonInner}>
+              {isProcessing || isReceivingData ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <>
+                  <Feather name="mic" size={24} color="#fff" />
+                  <Text style={styles.captureButtonText}>
+                    Record Demo Audio
                   </Text>
-                  <Text style={styles.recordingStatus}>
-                    {isRecording
-                      ? "Recording"
-                      : audioUri
-                      ? "Recording Complete"
-                      : "Ready"}
-                  </Text>
-                </View>
-              </View>
-
-              <TouchableOpacity
-                style={[styles.recordButton, isRecording && styles.stopButton]}
-                onPress={isRecording ? stopRecording : startRecording}
-                disabled={isAnalyzing}
-              >
-                <Feather
-                  name={isRecording ? "square" : "mic"}
-                  size={30}
-                  color="#fff"
-                />
-              </TouchableOpacity>
-
-              {audioUri && !isRecording && (
-                <View style={styles.actionButtons}>
-                  <TouchableOpacity
-                    style={[
-                      styles.analyzeButton,
-                      isAnalyzing && styles.analyzeButtonDisabled,
-                    ]}
-                    onPress={analyzeRecording}
-                    disabled={isAnalyzing}
-                  >
-                    {isAnalyzing ? (
-                      <View style={styles.analyzingContainer}>
-                        <ActivityIndicator color="#fff" size="small" />
-                        <Text style={styles.analyzeButtonText}>
-                          Analyzing...
-                        </Text>
-                      </View>
-                    ) : (
-                      <View style={styles.analyzingContainer}>
-                        <Feather name="bar-chart-2" size={20} color="#fff" />
-                        <Text style={styles.analyzeButtonText}>
-                          Analyze Recording
-                        </Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.newRecordingButton}
-                    onPress={() => {
-                      setAudioUri(null);
-                      setRecordingDuration(0);
-                    }}
-                    disabled={isAnalyzing}
-                  >
-                    <Feather name="refresh-cw" size={16} color="#3B82F6" />
-                    <Text style={styles.newRecordingText}>New Recording</Text>
-                  </TouchableOpacity>
-                </View>
+                </>
               )}
-            </LinearGradient>
-
-            <View style={styles.instructionsContainer}>
-              <Text style={styles.instructionsTitle}>How to record:</Text>
-              <View style={styles.instructionItem}>
-                <View style={styles.instructionNumber}>
-                  <Text style={styles.instructionNumberText}>1</Text>
-                </View>
-                <Text style={styles.instructionText}>
-                  Place the stethoscope on the{" "}
-                  {testName === "Auscultation (Heart)"
-                    ? "chest"
-                    : testName === "Auscultation (Lungs)"
-                    ? "back or chest"
-                    : "abdomen"}{" "}
-                  area
-                </Text>
-              </View>
-              <View style={styles.instructionItem}>
-                <View style={styles.instructionNumber}>
-                  <Text style={styles.instructionNumberText}>2</Text>
-                </View>
-                <Text style={styles.instructionText}>
-                  Press the record button and maintain position for 15-30
-                  seconds
-                </Text>
-              </View>
-              <View style={styles.instructionItem}>
-                <View style={styles.instructionNumber}>
-                  <Text style={styles.instructionNumberText}>3</Text>
-                </View>
-                <Text style={styles.instructionText}>
-                  Try to minimize background noise and movement during recording
-                </Text>
-              </View>
             </View>
+          </TouchableOpacity>
+
+          {/* Connection status indicator */}
+          <View style={styles.connectionStatus}>
+            <View
+              style={[
+                styles.statusIndicator,
+                isConnected
+                  ? styles.connectedIndicator
+                  : styles.disconnectedIndicator,
+              ]}
+            />
+            <Text style={styles.statusText}>
+              Demo mode - Using sample audio from assets
+            </Text>
+          </View>
+        </View>
+
+        {/* Processing indicator */}
+        {(isProcessing || isReceivingData) && (
+          <View style={styles.processingContainer}>
+            <ActivityIndicator size="large" color="#3B82F6" />
+            <Text style={styles.processingText}>
+              {isReceivingData ? "Receiving audio..." : "Analyzing audio..."}
+            </Text>
           </View>
         )}
+
+        {/* Previously captured audio files */}
+        {renderPreviousAudioFiles()}
       </ScrollView>
 
       {/* Analysis Results Modal */}
       <Modal
-        visible={showResultModal}
-        animationType="slide"
+        animationType="fade"
         transparent={true}
-        onRequestClose={() => setShowResultModal(false)}
+        visible={modalVisible}
+        onRequestClose={() => setModalVisible(false)}
       >
         <View style={styles.modalContainer}>
           <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Analysis Results</Text>
-              <TouchableOpacity
-                style={styles.closeModalButton}
-                onPress={() => setShowResultModal(false)}
-              >
-                <Feather name="x" size={24} color="#64748B" />
-              </TouchableOpacity>
-            </View>
+            <TouchableOpacity
+              style={styles.closeButton}
+              onPress={() => setModalVisible(false)}
+            >
+              <Feather name="x" size={24} color="#64748B" />
+            </TouchableOpacity>
 
-            {analysisResult && (
+            {selectedAudio && (
               <>
-                <View
-                  style={[
-                    styles.resultIndicator,
-                    analysisResult.isHealthy
-                      ? styles.healthyResult
-                      : styles.unhealthyResult,
-                  ]}
-                >
-                  <Feather
-                    name={
-                      analysisResult.isHealthy ? "check-circle" : "alert-circle"
-                    }
-                    size={30}
-                    color="#fff"
-                  />
-                  <Text style={styles.resultIndicatorText}>
-                    {analysisResult.isHealthy
-                      ? "Normal Findings"
-                      : "Abnormal Findings"}
-                  </Text>
-                </View>
+                <Text style={styles.modalTitle}>Audio Analysis Results</Text>
 
-                <View style={styles.confidenceContainer}>
-                  <Text style={styles.confidenceLabel}>Confidence Level</Text>
-                  <View style={styles.confidenceBarContainer}>
+                {selectedAudio.analysis ? (
+                  <View style={styles.resultContainer}>
                     <View
                       style={[
-                        styles.confidenceBar,
-                        { width: `${analysisResult.confidence}%` },
+                        styles.analysisResult,
+                        selectedAudio.analysis.label === "Normal"
+                          ? styles.healthyResult
+                          : styles.abnormalResult,
                       ]}
-                    />
+                    >
+                      <Feather
+                        name={
+                          selectedAudio.analysis.label === "Normal"
+                            ? "check-circle"
+                            : "alert-circle"
+                        }
+                        size={30}
+                        color="#fff"
+                      />
+                      <Text style={styles.analysisResultText}>
+                        {selectedAudio.analysis.label === "Normal"
+                          ? "Normal - Healthy Sounds"
+                          : `Abnormal - Requires Attention`}
+                      </Text>
+                    </View>
+
+                    <View style={styles.confidenceContainer}>
+                      <Text style={styles.confidenceLabel}>
+                        Overall Confidence
+                      </Text>
+                      <View style={styles.confidenceBarContainer}>
+                        <View
+                          style={[
+                            styles.confidenceBar,
+                            {
+                              width: `${
+                                selectedAudio.analysis.confidence * 100
+                              }%`,
+                            },
+                          ]}
+                        />
+                      </View>
+                      <Text style={styles.confidenceValue}>
+                        {Math.round(selectedAudio.analysis.confidence * 100)}%
+                      </Text>
+                    </View>
+
+                    <View style={styles.probabilitiesContainer}>
+                      <Text style={styles.probabilitiesTitle}>
+                        Detailed Probabilities
+                      </Text>
+                      {Object.entries(selectedAudio.analysis.probabilities).map(
+                        ([key, value]) => (
+                          <View key={key} style={styles.probabilityItem}>
+                            <Text style={styles.probabilityLabel}>
+                              {key.charAt(0).toUpperCase() +
+                                key.slice(1).replace(/_/g, " ")}
+                            </Text>
+                            <View style={styles.probabilityBarContainer}>
+                              <View
+                                style={[
+                                  styles.probabilityBar,
+                                  { width: `${value * 100}%` },
+                                ]}
+                              />
+                            </View>
+                            <Text style={styles.probabilityValue}>
+                              {Math.round(value * 100)}%
+                            </Text>
+                          </View>
+                        )
+                      )}
+                    </View>
+
+                    <View style={styles.recommendationContainer}>
+                      <Text style={styles.recommendationTitle}>
+                        Recommendation
+                      </Text>
+                      <Text style={styles.recommendationText}>
+                        {selectedAudio.analysis.label === "Normal"
+                          ? "Normal heart/lung sounds detected. Continue regular monitoring and maintain good health practices."
+                          : "Abnormal sounds detected. It is recommended to consult a healthcare professional for proper diagnosis and treatment."}
+                      </Text>
+                    </View>
                   </View>
-                  <Text style={styles.confidenceValue}>
-                    {analysisResult.confidence}%
-                  </Text>
-                </View>
+                ) : (
+                  <View style={styles.noAnalysisContainer}>
+                    <Text style={styles.noAnalysisText}>
+                      No analysis results available
+                    </Text>
+                  </View>
+                )}
 
-                <View style={styles.descriptionContainer}>
-                  <Text style={styles.descriptionLabel}>Findings</Text>
-                  <Text style={styles.descriptionText}>
-                    {analysisResult.description}
-                  </Text>
-                </View>
-
+                {/* Delete Button */}
                 <TouchableOpacity
-                  style={styles.saveResultsButton}
-                  onPress={() => {
-                    // Here we would implement saving the results
-                    setShowResultModal(false);
-                    Alert.alert(
-                      "Results Saved",
-                      "Analysis results have been saved to your medical records."
-                    );
-                  }}
+                  style={styles.deleteButton}
+                  onPress={() => confirmDelete(selectedAudio)}
                 >
-                  <Text style={styles.saveResultsText}>Save Results</Text>
+                  <Feather name="trash-2" size={18} color="#fff" />
+                  <Text style={styles.deleteButtonText}>Delete Recording</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -815,11 +772,19 @@ export default function AuscultationScreen() {
   );
 }
 
+const { width } = Dimensions.get("window");
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#F8FAFC",
     paddingTop: Platform.OS === "android" ? StatusBar.currentHeight || 25 : 0,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    paddingBottom: 20,
   },
   header: {
     padding: 16,
@@ -844,378 +809,229 @@ const styles = StyleSheet.create({
     color: "#64748B",
     marginTop: 4,
   },
-  container: {
-    flex: 1,
-  },
-  contentContainer: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-
-  // Connection section styles
-  connectionSection: {
-    marginBottom: 20,
-  },
-  connectionCard: {
-    borderRadius: 16,
-    padding: 24,
-    alignItems: "center",
-    marginBottom: 20,
-  },
-  connectionCardTitle: {
-    color: "#fff",
-    fontSize: 22,
-    fontWeight: "bold",
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  connectionCardText: {
-    color: "#fff",
-    fontSize: 16,
-    textAlign: "center",
-    marginBottom: 20,
-    opacity: 0.9,
-  },
-  scanButton: {
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    borderRadius: 12,
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  scanButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  devicesContainer: {
+  guidanceContainer: {
     backgroundColor: "#fff",
-    borderRadius: 16,
+    borderRadius: 12,
     padding: 16,
+    marginHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 20,
     borderWidth: 1,
     borderColor: "#E2E8F0",
   },
-  devicesHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  devicesTitle: {
+  guidanceTitle: {
     fontSize: 18,
     fontWeight: "600",
     color: "#1E293B",
-  },
-  devicesList: {
-    maxHeight: 300,
-  },
-  devicesListContent: {
-    paddingBottom: 8,
-  },
-  deviceItem: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: 12,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-    borderRadius: 12,
     marginBottom: 8,
   },
-  connectedDeviceItem: {
-    borderColor: "#3B82F6",
-    backgroundColor: "#F0F9FF",
-  },
-  deviceInfo: {
-    flex: 1,
-  },
-  deviceName: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#1E293B",
-    marginBottom: 4,
-  },
-  deviceId: {
-    fontSize: 12,
+  guidanceText: {
+    fontSize: 14,
+    lineHeight: 20,
     color: "#64748B",
   },
-  deviceStatus: {
-    marginLeft: 8,
+  captureContainer: {
+    alignItems: "center",
+    marginBottom: 20,
+    paddingHorizontal: 16,
   },
-  connectButton: {
+  captureButton: {
     backgroundColor: "#3B82F6",
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    borderRadius: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 24,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
   },
-  connectButtonText: {
-    color: "#fff",
-    fontWeight: "500",
-    fontSize: 14,
-  },
-  connectedIndicator: {
+  captureButtonInner: {
     flexDirection: "row",
     alignItems: "center",
-  },
-  connectedText: {
-    color: "#22C55E",
-    fontWeight: "500",
-    fontSize: 14,
-    marginLeft: 4,
-  },
-  noDevicesMessage: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 16,
-    backgroundColor: "#F1F5F9",
-    borderRadius: 8,
-  },
-  noDevicesText: {
-    flex: 1,
-    marginLeft: 8,
-    color: "#64748B",
-    fontSize: 14,
-  },
-
-  // Recording section styles
-  recordingSection: {
-    marginBottom: 20,
-  },
-  connectedDeviceInfo: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
-  },
-  deviceIconContainer: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "#EFF6FF",
     justifyContent: "center",
-    alignItems: "center",
-    marginRight: 12,
   },
-  connectedDeviceDetails: {
-    flex: 1,
-  },
-  connectedDeviceName: {
+  captureButtonText: {
+    color: "#fff",
     fontSize: 16,
     fontWeight: "600",
-    color: "#1E293B",
-    marginBottom: 4,
+    marginLeft: 8,
   },
-  connectedStatusIndicator: {
+  connectionStatus: {
     flexDirection: "row",
     alignItems: "center",
+    marginTop: 10,
   },
-  statusDot: {
+  statusIndicator: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: "#22C55E",
     marginRight: 6,
   },
-  connectedStatusText: {
-    fontSize: 14,
-    color: "#22C55E",
+  connectedIndicator: {
+    backgroundColor: "#22C55E",
   },
-  disconnectButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#F1F5F9",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  recordingCard: {
-    borderRadius: 16,
-    padding: 24,
-    marginBottom: 20,
-    alignItems: "center",
-  },
-  recordingVisual: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 24,
-  },
-  recordingIndicator: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: "#E2E8F0",
-    marginRight: 12,
-  },
-  recordingActive: {
+  disconnectedIndicator: {
     backgroundColor: "#EF4444",
   },
-  durationContainer: {
-    alignItems: "center",
-  },
-  durationText: {
-    fontSize: 36,
-    fontWeight: "bold",
-    color: "#1E293B",
-    marginBottom: 4,
-  },
-  recordingStatus: {
+  statusText: {
     fontSize: 14,
     color: "#64748B",
   },
-  recordButton: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: "#3B82F6",
-    justifyContent: "center",
+  processingContainer: {
     alignItems: "center",
+    marginTop: 10,
     marginBottom: 20,
   },
-  stopButton: {
-    backgroundColor: "#EF4444",
-  },
-  actionButtons: {
-    width: "100%",
-    alignItems: "center",
-  },
-  analyzeButton: {
-    flexDirection: "row",
-    backgroundColor: "#3B82F6",
-    paddingVertical: 12,
-    paddingHorizontal: 20,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  analyzeButtonDisabled: {
-    backgroundColor: "#94A3B8",
-  },
-  analyzingContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  analyzeButtonText: {
-    color: "#fff",
+  processingText: {
+    marginTop: 8,
     fontSize: 16,
-    fontWeight: "600",
-    marginLeft: 8,
-  },
-  newRecordingButton: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  newRecordingText: {
-    color: "#3B82F6",
-    fontSize: 14,
+    color: "#64748B",
     fontWeight: "500",
-    marginLeft: 6,
   },
-  instructionsContainer: {
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: "#E2E8F0",
+  previousAudioContainer: {
+    marginHorizontal: 16,
+    marginTop: 10,
   },
-  instructionsTitle: {
+  previousAudioTitle: {
     fontSize: 18,
     fontWeight: "600",
     color: "#1E293B",
-    marginBottom: 16,
+    marginBottom: 10,
   },
-  instructionItem: {
+  audioListContainer: {
+    maxHeight: 300,
+  },
+  audioListContent: {
+    paddingBottom: 5,
+  },
+  audioItem: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 12,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#E2E8F0",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 1,
   },
-  instructionNumber: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  audioIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     backgroundColor: "#EFF6FF",
     justifyContent: "center",
     alignItems: "center",
     marginRight: 12,
   },
-  instructionNumberText: {
-    fontSize: 14,
-    fontWeight: "bold",
-    color: "#3B82F6",
-  },
-  instructionText: {
+  audioInfo: {
     flex: 1,
+  },
+  audioFileName: {
+    fontSize: 16,
+    fontWeight: "500",
+    color: "#1E293B",
+    marginBottom: 4,
+  },
+  audioDuration: {
     fontSize: 14,
-    color: "#475569",
+    color: "#64748B",
+    marginBottom: 6,
+  },
+  analysisIndicator: {
+    alignSelf: "flex-start",
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  healthyIndicator: {
+    backgroundColor: "rgba(34, 197, 94, 0.1)",
+  },
+  abnormalIndicator: {
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+  },
+  analysisIndicatorText: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#1E293B",
   },
 
-  // Modal styles
+  // Modal Styles
   modalContainer: {
     flex: 1,
-    justifyContent: "flex-end",
+    justifyContent: "center",
+    alignItems: "center",
     backgroundColor: "rgba(0, 0, 0, 0.5)",
+    padding: 20,
   },
   modalContent: {
     backgroundColor: "#fff",
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 24,
-    paddingTop: 16,
+    borderRadius: 16,
+    padding: 20,
+    width: "90%",
+    maxHeight: "80%",
   },
-  modalHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
+  closeButton: {
+    position: "absolute",
+    top: 10,
+    right: 10,
+    zIndex: 10,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#F1F5F9",
+    justifyContent: "center",
     alignItems: "center",
-    marginBottom: 24,
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: "bold",
     color: "#1E293B",
+    marginBottom: 15,
+    marginTop: 5,
+    textAlign: "center",
   },
-  closeModalButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#F1F5F9",
-    justifyContent: "center",
-    alignItems: "center",
+  resultContainer: {
+    width: "100%",
   },
-  resultIndicator: {
+  analysisResult: {
     flexDirection: "row",
     alignItems: "center",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 24,
+    justifyContent: "center",
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginBottom: 15,
   },
   healthyResult: {
     backgroundColor: "#22C55E",
   },
-  unhealthyResult: {
+  abnormalResult: {
     backgroundColor: "#EF4444",
   },
-  resultIndicatorText: {
+  analysisResultText: {
     color: "#fff",
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: "bold",
-    marginLeft: 12,
+    marginLeft: 8,
   },
   confidenceContainer: {
-    marginBottom: 24,
+    marginBottom: 15,
   },
   confidenceLabel: {
-    fontSize: 16,
-    fontWeight: "500",
+    fontSize: 14,
     color: "#64748B",
-    marginBottom: 8,
+    marginBottom: 6,
   },
   confidenceBarContainer: {
     height: 12,
     backgroundColor: "#F1F5F9",
     borderRadius: 6,
+    overflow: "hidden",
     marginBottom: 4,
   },
   confidenceBar: {
@@ -1225,33 +1041,87 @@ const styles = StyleSheet.create({
   },
   confidenceValue: {
     fontSize: 14,
-    color: "#1E293B",
     fontWeight: "600",
+    color: "#1E293B",
     alignSelf: "flex-end",
   },
-  descriptionContainer: {
-    marginBottom: 24,
+  probabilitiesContainer: {
+    marginBottom: 15,
   },
-  descriptionLabel: {
-    fontSize: 16,
-    fontWeight: "500",
-    color: "#64748B",
-    marginBottom: 8,
-  },
-  descriptionText: {
-    fontSize: 16,
-    lineHeight: 24,
-    color: "#1E293B",
-  },
-  saveResultsButton: {
-    backgroundColor: "#3B82F6",
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: "center",
-  },
-  saveResultsText: {
-    color: "#fff",
+  probabilitiesTitle: {
     fontSize: 16,
     fontWeight: "600",
+    color: "#1E293B",
+    marginBottom: 10,
+  },
+  probabilityItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  probabilityLabel: {
+    fontSize: 14,
+    color: "#64748B",
+    width: 120,
+  },
+  probabilityBarContainer: {
+    flex: 1,
+    height: 8,
+    backgroundColor: "#F1F5F9",
+    borderRadius: 4,
+    marginHorizontal: 8,
+    overflow: "hidden",
+  },
+  probabilityBar: {
+    height: "100%",
+    backgroundColor: "#3B82F6",
+    borderRadius: 4,
+  },
+  probabilityValue: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#1E293B",
+    width: 40,
+    textAlign: "right",
+  },
+  recommendationContainer: {
+    marginBottom: 15,
+  },
+  recommendationTitle: {
+    fontSize: 16,
+    fontWeight: "600",
+    color: "#1E293B",
+    marginBottom: 6,
+  },
+  recommendationText: {
+    fontSize: 14,
+    lineHeight: 20,
+    color: "#475569",
+  },
+  deleteButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EF4444",
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    marginTop: 10,
+  },
+  deleteButtonText: {
+    color: "#fff",
+    fontSize: 14,
+    fontWeight: "600",
+    marginLeft: 6,
+  },
+  noAnalysisContainer: {
+    padding: 16,
+    alignItems: "center",
+    marginBottom: 15,
+  },
+  noAnalysisText: {
+    fontSize: 16,
+    color: "#64748B",
+    fontStyle: "italic",
   },
 });
