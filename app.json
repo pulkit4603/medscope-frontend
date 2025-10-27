@@ -58,7 +58,11 @@
       "typedRoutes": true
     },
     "extra": {
-      "roboflowApiKey": "process.env.ROBOFLOW_API_KEY"
+      "roboflowApiKey": "process.env.ROBOFLOW_API_KEY",
+      "router": {},
+      "eas": {
+        "projectId": "7218daed-714f-4634-9868-29970b286b3d"
+      }
     }
   }
 }

@@ -13,6 +13,7 @@ import {
   Dimensions,
   Alert,
   ActivityIndicator,
+  PermissionsAndroid,
 } from "react-native";
 import { useLocalSearchParams, router } from "expo-router";
 import { Feather } from "@expo/vector-icons";
@@ -21,15 +22,29 @@ import { Audio } from "expo-av";
 import { Asset } from "expo-asset";
 import axios from "axios";
 // @ts-ignore
-import TcpSocket from "react-native-tcp-socket";
+import {
+  UsbSerial,
+  UsbSerialManager,
+} from "react-native-usb-serialport-for-android";
 
-// TCP Socket Configuration
-const TCP_HOST = "0.0.0.0";
-const TCP_PORT = 8081; // Different port from pharyngoscopy
+// USB Configuration for the microphone device
+const USB_VENDOR_ID = 0x1234; // Replace with your device's vendor ID
+const USB_PRODUCT_ID = 0x5678; // Replace with your device's product ID
+const USB_BAUD_RATE = 115200;
+
+// API Configuration
 const AUSCULTATION_API_URL = "https://h3rsh-Heart.hf.space/predict";
 
 // Audio storage directory
 const AUDIO_DIRECTORY = FileSystem.documentDirectory + "medscope-auscultation/";
+
+// USB Commands
+const USB_COMMANDS = {
+  START_RECORDING: "START_REC\n",
+  STOP_RECORDING: "STOP_REC\n",
+  GET_STATUS: "STATUS\n",
+  PING: "PING\n",
+};
 
 interface AudioItem {
   id: string;
@@ -61,10 +76,10 @@ interface ApiResponse {
 export default function AuscultationScreen() {
   const { testName } = useLocalSearchParams<{ testName: string }>();
 
-  // State for TCP connection
+  // State for USB connection
   const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [tcpServer, setTcpServer] = useState<any>(null);
-  const [clientSocket, setClientSocket] = useState<any>(null);
+  const [usbDevice, setUsbDevice] = useState<any>(null);
+  const [isRecording, setIsRecording] = useState<boolean>(false);
 
   // State for audio recording and analysis
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -75,38 +90,55 @@ export default function AuscultationScreen() {
     new Uint8Array()
   );
   const [isReceivingData, setIsReceivingData] = useState<boolean>(false);
-  const [currentAudioIndex, setCurrentAudioIndex] = useState<number>(0);
-
-  // Audio files in the specified order
-  const audioFiles = [
-    { name: "abnormal1.wav", path: require("../assets/audio/abnormal1.wav") },
-    { name: "abnormal2.wav", path: require("../assets/audio/abnormal2.wav") },
-    { name: "normal1.wav", path: require("../assets/audio/normal1.wav") },
-    { name: "normal2.wav", path: require("../assets/audio/normal2.wav") },
-  ];
 
   // Use ref for accumulating audio data
   const receivedAudioDataRef = useRef<Uint8Array>(new Uint8Array());
+  const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Setup directory and initialize TCP server
+  // Setup directory and initialize USB connection
   useEffect(() => {
     const initializeApp = async () => {
+      await requestUSBPermissions();
       await setupDirectory();
       console.log("Audio directory setup completed");
       await loadSavedAudioFiles();
       console.log("Saved audio files loaded");
-      initializeTcpSocket();
+      await initializeUSBConnection();
     };
 
     initializeApp();
 
     return () => {
-      // Cleanup socket on unmount
-      if (tcpServer) {
-        tcpServer.close();
+      // Cleanup USB connection on unmount
+      if (usbDevice) {
+        disconnectUSBDevice();
       }
     };
   }, []);
+
+  // Request USB permissions (Android)
+  const requestUSBPermissions = async () => {
+    if (Platform.OS === "android") {
+      try {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE,
+          {
+            title: "USB Permission",
+            message:
+              "App needs USB access to communicate with the microphone device",
+            buttonNeutral: "Ask Me Later",
+            buttonNegative: "Cancel",
+            buttonPositive: "OK",
+          }
+        );
+        return granted === PermissionsAndroid.RESULTS.GRANTED;
+      } catch (err) {
+        console.warn("USB permission error:", err);
+        return false;
+      }
+    }
+    return true;
+  };
 
   const setupDirectory = async () => {
     const dirInfo = await FileSystem.getInfoAsync(AUDIO_DIRECTORY);
@@ -210,89 +242,167 @@ export default function AuscultationScreen() {
     }
   };
 
-  // Initialize TCP server for audio reception
-  const initializeTcpSocket = () => {
+  // Initialize USB connection to the microphone device
+  const initializeUSBConnection = async () => {
     try {
-      const server = TcpSocket.createServer(function (socket) {
-        console.log("Audio client connected:", socket.address());
-        setIsConnected(true);
-        setClientSocket(socket);
+      console.log("Initializing USB connection...");
 
-        socket.on("data", (data: string | Buffer) => {
-          const uint8Data = new Uint8Array(data as Buffer);
-          console.log(`Received ${uint8Data.length} bytes of audio data`);
-          handleReceivedAudioData(uint8Data);
-        });
+      // Get list of USB devices
+      const devices = await UsbSerialManager.list();
+      console.log("Available USB devices:", devices);
 
-        socket.on("error", (error: any) => {
-          console.error("Audio client socket error:", error);
-          setIsConnected(false);
-          setClientSocket(null);
-        });
+      // Find our specific microphone device
+      const micDevice = devices.find(
+        (device) =>
+          device.vendorId === USB_VENDOR_ID &&
+          device.productId === USB_PRODUCT_ID
+      );
 
-        socket.on("close", () => {
-          console.log("Audio client disconnected");
-          setIsConnected(false);
-          setClientSocket(null);
-        });
-      }).listen({ port: TCP_PORT, host: TCP_HOST });
-
-      server.on("error", (error: any) => {
-        console.error("TCP audio server error:", error);
+      if (!micDevice) {
+        console.log("Microphone device not found");
         Alert.alert(
-          "Server Error",
-          "Failed to start TCP audio server. Please check if the port is available."
+          "Device Not Found",
+          "Please connect the USB microphone device and try again."
         );
+        return;
+      }
+
+      // Request permission and connect
+      const hasPermission = await UsbSerialManager.tryRequestPermission(
+        micDevice.deviceId
+      );
+
+      if (!hasPermission) {
+        Alert.alert(
+          "Permission Denied",
+          "USB permission is required to communicate with the microphone device."
+        );
+        return;
+      }
+
+      // Open connection to the device
+      const device = await UsbSerial.open(micDevice.deviceId, {
+        baudRate: USB_BAUD_RATE,
+        parity: UsbSerial.PARITY_NONE,
+        dataBits: UsbSerial.DATA_BITS_8,
+        stopBits: UsbSerial.STOP_BITS_1,
       });
 
-      server.on("close", () => {
-        console.log("TCP audio server closed");
-        setIsConnected(false);
-        setTcpServer(null);
-        setClientSocket(null);
+      setUsbDevice(device);
+      setIsConnected(true);
+
+      // Set up data listener
+      const subscription = device.onReceived((data) => {
+        handleReceivedUSBData(data);
       });
 
-      setTcpServer(server);
-      console.log(`TCP audio server listening on ${TCP_HOST}:${TCP_PORT}`);
+      // Send ping to test connection
+      await sendUSBCommand(USB_COMMANDS.PING);
+
+      console.log("USB microphone device connected successfully");
     } catch (error) {
-      console.error("Failed to initialize TCP audio server:", error);
-      Alert.alert("Server Error", "Failed to initialize TCP audio server.");
+      console.error("Failed to initialize USB connection:", error);
+      Alert.alert(
+        "Connection Error",
+        "Failed to connect to the USB microphone device. Please check the connection and try again."
+      );
     }
   };
 
-  // Handle received audio data from TCP socket
-  const handleReceivedAudioData = async (data: Uint8Array) => {
+  // Disconnect USB device
+  const disconnectUSBDevice = async () => {
     try {
-      setIsReceivingData(true);
-
-      // Accumulate received data
-      const currentData = receivedAudioDataRef.current;
-      const newData = new Uint8Array(currentData.length + data.length);
-      newData.set(currentData);
-      newData.set(data, currentData.length);
-
-      receivedAudioDataRef.current = newData;
-      setReceivedAudioData(newData);
-
-      console.log(
-        `Received ${data.length} bytes, total: ${newData.length} bytes`
-      );
-
-      // Check for audio file terminator or sufficient data
-      // For simplicity, let's assume we receive the complete audio file in chunks
-      // and process it after a short delay without new data
-      setTimeout(() => {
-        if (receivedAudioDataRef.current.length > 0) {
-          processReceivedAudio();
-        }
-      }, 1000); // Wait 1 second for more data
+      if (usbDevice) {
+        await usbDevice.close();
+        setUsbDevice(null);
+        setIsConnected(false);
+        console.log("USB device disconnected");
+      }
     } catch (error) {
-      console.error("Error processing received audio data:", error);
-      Alert.alert("Error", "Failed to process audio from device.");
-      receivedAudioDataRef.current = new Uint8Array();
-      setReceivedAudioData(new Uint8Array());
-      setIsProcessing(false);
-      setIsReceivingData(false);
+      console.error("Error disconnecting USB device:", error);
+    }
+  };
+
+  // Send command to USB device
+  const sendUSBCommand = async (command: string) => {
+    try {
+      if (!usbDevice || !isConnected) {
+        throw new Error("USB device not connected");
+      }
+
+      console.log("Sending USB command:", command.trim());
+      await usbDevice.send(command);
+      return true;
+    } catch (error) {
+      console.error("Error sending USB command:", error);
+      Alert.alert(
+        "Communication Error",
+        "Failed to send command to the device."
+      );
+      return false;
+    }
+  };
+
+  // Handle received data from USB device
+  const handleReceivedUSBData = (data: string) => {
+    try {
+      console.log("Received USB data length:", data.length);
+
+      // Check if it's a status response
+      if (
+        data.startsWith("STATUS:") ||
+        data.startsWith("PONG") ||
+        data.startsWith("ACK")
+      ) {
+        console.log("Device status:", data.trim());
+        return;
+      }
+
+      // Check if it's the start of audio data
+      if (data.startsWith("AUDIO_START")) {
+        console.log("Audio data transmission started");
+        receivedAudioDataRef.current = new Uint8Array();
+        setIsReceivingData(true);
+        return;
+      }
+
+      // Check if it's the end of audio data
+      if (data.startsWith("AUDIO_END")) {
+        console.log("Audio data transmission completed");
+        setIsReceivingData(false);
+        processReceivedAudio();
+        return;
+      }
+
+      // If we're receiving audio data, accumulate it
+      if (isReceivingData) {
+        // Convert received string data to Uint8Array
+        // Assuming the device sends base64 encoded audio data
+        try {
+          const binaryString = atob(data);
+          const audioChunk = new Uint8Array(binaryString.length);
+          for (let i = 0; i < binaryString.length; i++) {
+            audioChunk[i] = binaryString.charCodeAt(i);
+          }
+
+          // Accumulate audio data
+          const currentData = receivedAudioDataRef.current;
+          const newData = new Uint8Array(
+            currentData.length + audioChunk.length
+          );
+          newData.set(currentData);
+          newData.set(audioChunk, currentData.length);
+
+          receivedAudioDataRef.current = newData;
+          setReceivedAudioData(newData);
+
+          console.log(`Accumulated ${newData.length} bytes of audio data`);
+        } catch (decodeError) {
+          console.error("Error decoding audio data:", decodeError);
+        }
+      }
+    } catch (error) {
+      console.error("Error processing received USB data:", error);
     }
   };
 
@@ -340,25 +450,85 @@ export default function AuscultationScreen() {
     }
   };
 
-  // Handle audio capture - always use real audio from assets
-  const handleCapture = async () => {
-    // Always use the real audio file from assets
-    await useMockAudioCapture();
+  // Start recording via USB command
+  const startRecording = async () => {
+    try {
+      if (!isConnected) {
+        Alert.alert(
+          "Not Connected",
+          "Please connect the USB microphone device first."
+        );
+        return;
+      }
+
+      setIsRecording(true);
+      setIsProcessing(true);
+
+      const success = await sendUSBCommand(USB_COMMANDS.START_RECORDING);
+      if (!success) {
+        setIsRecording(false);
+        setIsProcessing(false);
+        return;
+      }
+
+      console.log("Recording started via USB");
+
+      // Set a timeout to automatically stop recording after 10 seconds
+      recordingTimeoutRef.current = setTimeout(() => {
+        stopRecording();
+      }, 10000);
+    } catch (error) {
+      console.error("Error starting recording:", error);
+      setIsRecording(false);
+      setIsProcessing(false);
+    }
   };
 
-  // Audio capture using real audio file from assets
+  // Stop recording via USB command
+  const stopRecording = async () => {
+    try {
+      if (recordingTimeoutRef.current) {
+        clearTimeout(recordingTimeoutRef.current);
+        recordingTimeoutRef.current = null;
+      }
+
+      const success = await sendUSBCommand(USB_COMMANDS.STOP_RECORDING);
+      if (success) {
+        console.log("Recording stopped via USB");
+      }
+
+      setIsRecording(false);
+      // Keep isProcessing true until we receive and process the audio data
+    } catch (error) {
+      console.error("Error stopping recording:", error);
+      setIsRecording(false);
+      setIsProcessing(false);
+    }
+  };
+
+  // Handle audio capture - use USB recording or fallback to demo
+  const handleCapture = async () => {
+    if (isConnected) {
+      if (isRecording) {
+        await stopRecording();
+      } else {
+        await startRecording();
+      }
+    } else {
+      // Fallback to demo audio when USB is not connected
+      await useMockAudioCapture();
+    }
+  };
+
+  // Audio capture using real audio file from assets (fallback)
   const useMockAudioCapture = async () => {
     try {
       setIsProcessing(true);
 
-      // Get current audio file
-      const currentAudioFile = audioFiles[currentAudioIndex];
-      console.log(
-        `Loading audio file: ${currentAudioFile.name} (index: ${currentAudioIndex})`
-      );
-
       // Load the real audio file from assets using Expo Asset
-      const asset = Asset.fromModule(currentAudioFile.path);
+      const asset = Asset.fromModule(
+        require("../assets/audio/sample_heart_sound.wav")
+      );
       await asset.downloadAsync();
 
       // Create a temporary file to copy the asset to
@@ -372,16 +542,10 @@ export default function AuscultationScreen() {
         to: tempUri,
       });
 
-      console.log(
-        `Audio file ${currentAudioFile.name} loaded from assets:`,
-        tempUri
-      );
+      console.log("Real audio file loaded from assets:", tempUri);
 
       // Process the real audio file
       await processCapturedAudio(tempUri);
-
-      // Move to next audio file for next capture (cycle through the array)
-      setCurrentAudioIndex((prevIndex) => (prevIndex + 1) % audioFiles.length);
 
       // Clean up
       await FileSystem.deleteAsync(tempUri);
@@ -389,7 +553,7 @@ export default function AuscultationScreen() {
       console.error("Error loading audio from assets:", error);
       Alert.alert(
         "Error",
-        "Failed to load audio file from assets. Please ensure the audio files exist in assets/audio/ folder"
+        "Failed to load audio file from assets. Please ensure the audio file exists in assets/audio/sample_heart_sound.wav"
       );
       setIsProcessing(false);
     }
@@ -403,7 +567,7 @@ export default function AuscultationScreen() {
       formData.append("file", {
         uri: uri,
         type: "audio/wav",
-        name: "sample_heart_sound.wav",
+        name: "recorded_audio.wav",
       } as any);
 
       console.log("API Request:", {
@@ -585,27 +749,40 @@ export default function AuscultationScreen() {
         <View style={styles.guidanceContainer}>
           <Text style={styles.guidanceTitle}>Auscultation Guidance</Text>
           <Text style={styles.guidanceText}>
-            Place the stethoscope on the appropriate area (chest for heart
-            sounds, back/chest for lung sounds). Ensure a quiet environment and
-            steady positioning during recording.
+            {isConnected
+              ? "Place the USB microphone on the appropriate area (chest for heart sounds, back/chest for lung sounds). Ensure a quiet environment during recording."
+              : "Connect the USB microphone device to record audio, or use demo mode with sample audio."}
           </Text>
         </View>
 
         {/* Capture section */}
         <View style={styles.captureContainer}>
           <TouchableOpacity
-            style={styles.captureButton}
+            style={[
+              styles.captureButton,
+              isRecording && styles.recordingButton,
+            ]}
             onPress={handleCapture}
-            disabled={isProcessing || isReceivingData}
+            disabled={isProcessing && !isRecording}
           >
             <View style={styles.captureButtonInner}>
-              {isProcessing || isReceivingData ? (
+              {isProcessing && !isRecording ? (
                 <ActivityIndicator color="#fff" size="small" />
               ) : (
                 <>
-                  <Feather name="mic" size={24} color="#fff" />
+                  <Feather
+                    name={
+                      isRecording ? "stop-circle" : isConnected ? "mic" : "play"
+                    }
+                    size={24}
+                    color="#fff"
+                  />
                   <Text style={styles.captureButtonText}>
-                    Record Demo Audio
+                    {isRecording
+                      ? "Stop Recording"
+                      : isConnected
+                      ? "Start Recording"
+                      : "Play Demo Audio"}
                   </Text>
                 </>
               )}
@@ -623,17 +800,31 @@ export default function AuscultationScreen() {
               ]}
             />
             <Text style={styles.statusText}>
-              Demo mode - Using sample audio from assets
+              {isConnected
+                ? "USB Microphone Connected"
+                : "USB Microphone Disconnected - Demo Mode"}
             </Text>
           </View>
+
+          {/* Recording indicator */}
+          {isRecording && (
+            <View style={styles.recordingIndicator}>
+              <View style={styles.recordingDot} />
+              <Text style={styles.recordingText}>Recording in progress...</Text>
+            </View>
+          )}
         </View>
 
         {/* Processing indicator */}
-        {(isProcessing || isReceivingData) && (
+        {isProcessing && (
           <View style={styles.processingContainer}>
             <ActivityIndicator size="large" color="#3B82F6" />
             <Text style={styles.processingText}>
-              {isReceivingData ? "Receiving audio..." : "Analyzing audio..."}
+              {isReceivingData
+                ? "Receiving audio data..."
+                : isRecording
+                ? "Recording..."
+                : "Analyzing audio..."}
             </Text>
           </View>
         )}
@@ -846,6 +1037,9 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
     elevation: 5,
   },
+  recordingButton: {
+    backgroundColor: "#EF4444",
+  },
   captureButtonInner: {
     flexDirection: "row",
     alignItems: "center",
@@ -877,6 +1071,27 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 14,
     color: "#64748B",
+  },
+  recordingIndicator: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "rgba(239, 68, 68, 0.1)",
+    borderRadius: 20,
+  },
+  recordingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: "#EF4444",
+    marginRight: 6,
+  },
+  recordingText: {
+    fontSize: 14,
+    color: "#EF4444",
+    fontWeight: "500",
   },
   processingContainer: {
     alignItems: "center",
