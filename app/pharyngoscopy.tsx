@@ -38,7 +38,7 @@ const IMAGE_HEIGHT = 320;
 // const ROBOFLOW_API_URL = "https://serverless.roboflow.com";
 
 // On Render API
-const RENDER_API_URL = "https://medscope-server.onrender.com";
+const RENDER_API_URL = "https://mvf1mw4m-8000.inc1.devtunnels.ms";
 
 interface ImageItem {
   id: string;
@@ -555,7 +555,7 @@ export default function PharyngoscopyScreen() {
                   ]}
                 >
                   <Text style={styles.diagnosisIndicatorText}>
-                    {image.diagnosis.isHealthy ? "Healthy" : "Pharyngitis"}
+                    {image.diagnosis.isHealthy ? "Healthy" : "Unhealthy"}
                   </Text>
                 </View>
               )}

@@ -5,3 +5,6 @@ export const audioApiUrl = `${apiurl}/send-audio`;
 
 // stm tcp to http helper server
 export const cameraServerUrl = "https://wfknkrpr-5000.inc1.devtunnels.ms";
+
+// dermatoscopy API endpoint
+export const dermatoscopyApiUrl = "https://mvf1mw4m-8000.inc1.devtunnels.ms";

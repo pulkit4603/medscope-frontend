@@ -59,10 +59,14 @@ export default function SupportedTestsScreen() {
 
   const handleTestSelect = (testName: string) => {
     // Check which test is selected
-    if (["Otoscopy", "Dermatoscopy"].includes(testName)) {
+    if (testName === "Otoscopy") {
       router.push({
-        // make this /imaging after making imaging.tsx.back into .tsx again (current error: imagine route not existing)
         pathname: "/pharyngoscopy",
+        params: { testName },
+      });
+    } else if (testName === "Dermatoscopy") {
+      router.push({
+        pathname: "/dermatoscopy" as any,
         params: { testName },
       });
     } else if (testName.startsWith("Auscultation")) {

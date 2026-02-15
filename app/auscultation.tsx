@@ -93,7 +93,7 @@ export default function AuscultationScreen() {
 
   // Use ref for accumulating audio data
   const receivedAudioDataRef = useRef<Uint8Array>(new Uint8Array());
-  const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const recordingTimeoutRef = useRef<number | null>(null);
 
   // Setup directory and initialize USB connection
   useEffect(() => {
@@ -260,10 +260,8 @@ export default function AuscultationScreen() {
 
       if (!micDevice) {
         console.log("Microphone device not found");
-        Alert.alert(
-          "Device Not Found",
-          "Please connect the USB microphone device and try again."
-        );
+        // Don't show alert in silent mode, just log
+        console.log("USB microphone not found, continuing in demo mode");
         return;
       }
 
@@ -273,27 +271,27 @@ export default function AuscultationScreen() {
       );
 
       if (!hasPermission) {
-        Alert.alert(
-          "Permission Denied",
-          "USB permission is required to communicate with the microphone device."
-        );
+        console.log("USB permission denied, continuing in demo mode");
         return;
       }
 
-      // Open connection to the device
-      const device = await UsbSerial.open(micDevice.deviceId, {
+      // Create USB serial connection - connection is opened automatically
+      const device = new UsbSerial(micDevice.deviceId, {
         baudRate: USB_BAUD_RATE,
-        parity: UsbSerial.PARITY_NONE,
-        dataBits: UsbSerial.DATA_BITS_8,
-        stopBits: UsbSerial.STOP_BITS_1,
+        parity: 0, // PARITY_NONE
+        dataBits: 8, // DATA_BITS_8
+        stopBits: 1, // STOP_BITS_1
       });
 
       setUsbDevice(device);
       setIsConnected(true);
 
-      // Set up data listener
-      const subscription = device.onReceived((data) => {
-        handleReceivedUSBData(data);
+      // Set up data listener - data comes as EventData which has a 'data' property
+      const subscription = device.onReceived((event: any) => {
+        // Convert EventData to string
+        const dataString =
+          typeof event === "string" ? event : event.data || String(event);
+        handleReceivedUSBData(dataString);
       });
 
       // Send ping to test connection
@@ -302,10 +300,8 @@ export default function AuscultationScreen() {
       console.log("USB microphone device connected successfully");
     } catch (error) {
       console.error("Failed to initialize USB connection:", error);
-      Alert.alert(
-        "Connection Error",
-        "Failed to connect to the USB microphone device. Please check the connection and try again."
-      );
+      // Don't show alert, just continue in demo mode
+      console.log("Continuing in demo mode");
     }
   };
 
@@ -476,7 +472,7 @@ export default function AuscultationScreen() {
       // Set a timeout to automatically stop recording after 10 seconds
       recordingTimeoutRef.current = setTimeout(() => {
         stopRecording();
-      }, 10000);
+      }, 10000) as unknown as number;
     } catch (error) {
       console.error("Error starting recording:", error);
       setIsRecording(false);
@@ -487,7 +483,7 @@ export default function AuscultationScreen() {
   // Stop recording via USB command
   const stopRecording = async () => {
     try {
-      if (recordingTimeoutRef.current) {
+      if (recordingTimeoutRef.current !== null) {
         clearTimeout(recordingTimeoutRef.current);
         recordingTimeoutRef.current = null;
       }
