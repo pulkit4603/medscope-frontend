@@ -75,6 +75,10 @@ interface ApiResponse {
 
 export default function AuscultationScreen() {
   const { testName } = useLocalSearchParams<{ testName: string }>();
+  const recordingRef = useRef<Audio.Recording | null>(null);
+  
+  const soundRef = useRef<Audio.Sound | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   // State for USB connection
   const [isConnected, setIsConnected] = useState<boolean>(false);
@@ -259,9 +263,8 @@ export default function AuscultationScreen() {
       );
 
       if (!micDevice) {
-        console.log("Microphone device not found");
-        // Don't show alert in silent mode, just log
-        console.log("USB microphone not found, continuing in demo mode");
+        console.log("USB microphone not found, switching to phone mic");
+        setIsConnected(false);
         return;
       }
 
@@ -299,10 +302,9 @@ export default function AuscultationScreen() {
 
       console.log("USB microphone device connected successfully");
     } catch (error) {
-      console.error("Failed to initialize USB connection:", error);
-      // Don't show alert, just continue in demo mode
-      console.log("Continuing in demo mode");
-    }
+        console.error("USB init failed:", error);
+        setIsConnected(false);
+      }
   };
 
   // Disconnect USB device
@@ -338,6 +340,60 @@ export default function AuscultationScreen() {
       return false;
     }
   };
+
+  //Start Phone Recording
+  const startPhoneRecording = async () => {
+  try {
+    setIsRecording(true);
+    setIsProcessing(false);
+
+    const permission = await Audio.requestPermissionsAsync();
+    if (!permission.granted) {
+      alert("Microphone permission is required");
+      return;
+    }
+
+    await Audio.setAudioModeAsync({
+      allowsRecordingIOS: true,
+      playsInSilentModeIOS: true,
+    });
+
+    const recording = new Audio.Recording();
+
+    await recording.prepareToRecordAsync(
+      Audio.RecordingOptionsPresets.HIGH_QUALITY
+    );
+
+    await recording.startAsync();
+    recordingRef.current = recording;
+
+    console.log("Phone recording started");
+  } catch (error) {
+    console.error("Start recording error:", error);
+  }
+};
+
+  //Stop recprding from phone
+  const stopPhoneRecording = async () => {
+  try {
+    setIsRecording(false);
+    setIsProcessing(true);
+
+    if (!recordingRef.current) return;
+
+    await recordingRef.current.stopAndUnloadAsync();
+    const uri = recordingRef.current.getURI();
+
+    recordingRef.current = null;
+
+    if (uri) {
+      await processCapturedAudio(uri);
+    }
+  } catch (error) {
+    console.error("Stop recording error:", error);
+    setIsProcessing(false);
+  }
+};
 
   // Handle received data from USB device
   const handleReceivedUSBData = (data: string) => {
@@ -504,56 +560,99 @@ export default function AuscultationScreen() {
 
   // Handle audio capture - use USB recording or fallback to demo
   const handleCapture = async () => {
-    if (isConnected) {
-      if (isRecording) {
-        await stopRecording();
-      } else {
-        await startRecording();
-      }
+  if (isConnected) {
+    // USB Mode
+    if (isRecording) {
+      await stopRecording();
     } else {
-      // Fallback to demo audio when USB is not connected
-      await useMockAudioCapture();
+      await startRecording();
     }
-  };
+  } else {
+    // Phone Microphone Mode
+    if (isRecording) {
+      await stopPhoneRecording();
+    } else {
+      await startPhoneRecording();
+    }
+  }
+};
 
   // Audio capture using real audio file from assets (fallback)
-  const useMockAudioCapture = async () => {
+  // const useMockAudioCapture = async () => {
+  //   try {
+  //     setIsProcessing(true);
+
+  //     // Load the real audio file from assets using Expo Asset
+  //     const asset = Asset.fromModule(
+  //       require("../assets/audio/sample_heart_sound.wav")
+  //     );
+  //     await asset.downloadAsync();
+
+  //     // Create a temporary file to copy the asset to
+  //     const timestamp = Date.now();
+  //     const tempFileName = `audio_${timestamp}.wav`;
+  //     const tempUri = FileSystem.documentDirectory + tempFileName;
+
+  //     // Copy the asset file to the temporary location
+  //     await FileSystem.copyAsync({
+  //       from: asset.localUri || asset.uri,
+  //       to: tempUri,
+  //     });
+
+  //     console.log("Real audio file loaded from assets:", tempUri);
+
+  //     // Process the real audio file
+  //     await processCapturedAudio(tempUri);
+
+  //     // Clean up
+  //     await FileSystem.deleteAsync(tempUri);
+  //   } catch (error) {
+  //     console.error("Error loading audio from assets:", error);
+  //     Alert.alert(
+  //       "Error",
+  //       "Failed to load audio file from assets. Please ensure the audio file exists in assets/audio/sample_heart_sound.wav"
+  //     );
+  //     setIsProcessing(false);
+  //   }
+  // };
+
+
+  const playAudio = async (uri: string) => {
     try {
-      setIsProcessing(true);
+      if (soundRef.current) {
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
 
-      // Load the real audio file from assets using Expo Asset
-      const asset = Asset.fromModule(
-        require("../assets/audio/sample_heart_sound.wav")
+      const { sound } = await Audio.Sound.createAsync(
+        { uri },
+        { shouldPlay: true }
       );
-      await asset.downloadAsync();
 
-      // Create a temporary file to copy the asset to
-      const timestamp = Date.now();
-      const tempFileName = `audio_${timestamp}.wav`;
-      const tempUri = FileSystem.documentDirectory + tempFileName;
+      soundRef.current = sound;
+      setIsPlaying(true);
 
-      // Copy the asset file to the temporary location
-      await FileSystem.copyAsync({
-        from: asset.localUri || asset.uri,
-        to: tempUri,
+      sound.setOnPlaybackStatusUpdate((status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          setIsPlaying(false);
+        }
       });
-
-      console.log("Real audio file loaded from assets:", tempUri);
-
-      // Process the real audio file
-      await processCapturedAudio(tempUri);
-
-      // Clean up
-      await FileSystem.deleteAsync(tempUri);
     } catch (error) {
-      console.error("Error loading audio from assets:", error);
-      Alert.alert(
-        "Error",
-        "Failed to load audio file from assets. Please ensure the audio file exists in assets/audio/sample_heart_sound.wav"
-      );
-      setIsProcessing(false);
+      console.error("Playback error:", error);
     }
   };
+
+  const stopPlayback = async () => {
+    if (soundRef.current) {
+      await soundRef.current.stopAsync();
+      await soundRef.current.unloadAsync();
+      soundRef.current = null;
+      setIsPlaying(false);
+    }
+  };
+
+
 
   // Process the captured audio through the API
   const processCapturedAudio = async (uri: string) => {
@@ -745,9 +844,7 @@ export default function AuscultationScreen() {
         <View style={styles.guidanceContainer}>
           <Text style={styles.guidanceTitle}>Auscultation Guidance</Text>
           <Text style={styles.guidanceText}>
-            {isConnected
-              ? "Place the USB microphone on the appropriate area (chest for heart sounds, back/chest for lung sounds). Ensure a quiet environment during recording."
-              : "Connect the USB microphone device to record audio, or use demo mode with sample audio."}
+            "Connect the USB microphone device to record audio, or use demo mode with sample audio."
           </Text>
         </View>
 
@@ -778,29 +875,13 @@ export default function AuscultationScreen() {
                       ? "Stop Recording"
                       : isConnected
                       ? "Start Recording"
-                      : "Play Demo Audio"}
+                      : "Start Recording"}
                   </Text>
                 </>
               )}
             </View>
           </TouchableOpacity>
 
-          {/* Connection status indicator */}
-          <View style={styles.connectionStatus}>
-            <View
-              style={[
-                styles.statusIndicator,
-                isConnected
-                  ? styles.connectedIndicator
-                  : styles.disconnectedIndicator,
-              ]}
-            />
-            <Text style={styles.statusText}>
-              {isConnected
-                ? "USB Microphone Connected"
-                : "USB Microphone Disconnected - Demo Mode"}
-            </Text>
-          </View>
 
           {/* Recording indicator */}
           {isRecording && (
@@ -941,6 +1022,33 @@ export default function AuscultationScreen() {
                     </Text>
                   </View>
                 )}
+
+                <TouchableOpacity
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "#3B82F6",
+                    paddingVertical: 10,
+                    paddingHorizontal: 16,
+                    borderRadius: 8,
+                    marginTop: 10,
+                  }}
+                  onPress={() =>
+                    isPlaying
+                      ? stopPlayback()
+                      : selectedAudio && playAudio(selectedAudio.uri)
+                  }
+                >
+                  <Feather
+                    name={isPlaying ? "square" : "play"}
+                    size={18}
+                    color="#fff"
+                  />
+                  <Text style={{ color: "#fff", marginLeft: 6 }}>
+                    {isPlaying ? "Stop Playback" : "Play Recording"}
+                  </Text>
+                </TouchableOpacity>
 
                 {/* Delete Button */}
                 <TouchableOpacity
