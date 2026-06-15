@@ -21,6 +21,9 @@ import * as FileSystem from "expo-file-system";
 import { Audio } from "expo-av";
 import { Asset } from "expo-asset";
 import axios from "axios";
+import dgram from "react-native-udp";
+import { Buffer } from "buffer";
+
 // @ts-ignore
 import {
   UsbSerial,
@@ -32,10 +35,23 @@ const USB_VENDOR_ID = 0x1234; // Replace with your device's vendor ID
 const USB_PRODUCT_ID = 0x5678; // Replace with your device's product ID
 const USB_BAUD_RATE = 115200;
 
+// WiFi UDP Configuration
+const UDP_PORT = 5000;
+
+const CONNECTION_MODE = {
+  WIFI: "wifi",
+  USB: "usb",
+  PHONE: "phone",
+} as const;
+
+type ConnectionMode =
+  (typeof CONNECTION_MODE)[keyof typeof CONNECTION_MODE];
+
 // API Configuration
 const AUSCULTATION_API_URL = "https://h3rsh-Heart.hf.space/predict";
 
 // Audio storage directory
+// @ts-ignore — expo-file-system.documentDirectory exists at runtime
 const AUDIO_DIRECTORY = FileSystem.documentDirectory + "medscope-auscultation/";
 
 // USB Commands
@@ -84,6 +100,11 @@ export default function AuscultationScreen() {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [usbDevice, setUsbDevice] = useState<any>(null);
   const [isRecording, setIsRecording] = useState<boolean>(false);
+  const [connectionMode, setConnectionMode] =
+    useState<ConnectionMode>(CONNECTION_MODE.PHONE);
+
+  const udpSocketRef = useRef<any>(null);
+  const udpConnectedRef = useRef(false);
 
   // State for audio recording and analysis
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
@@ -99,6 +120,14 @@ export default function AuscultationScreen() {
   const receivedAudioDataRef = useRef<Uint8Array>(new Uint8Array());
   const recordingTimeoutRef = useRef<number | null>(null);
 
+  // Use a ref to track receiving state synchronously (avoid React state staleness)
+  const receivingRef = useRef<boolean>(false);
+  // Keep USB subscription so we can remove it on cleanup
+  const usbSubscriptionRef = useRef<any>(null);
+
+  // Ensure Buffer is available globally for react-native-udp and encoding
+  ;(global as any).Buffer = Buffer;
+
   // Setup directory and initialize USB connection
   useEffect(() => {
     const initializeApp = async () => {
@@ -107,16 +136,23 @@ export default function AuscultationScreen() {
       console.log("Audio directory setup completed");
       await loadSavedAudioFiles();
       console.log("Saved audio files loaded");
-      await initializeUSBConnection();
+      await initializeUDPConnection();
+
+      setTimeout(async () => {
+        if (!udpConnectedRef.current) {
+          await initializeUSBConnection();
+        }
+      }, 3000);
     };
 
     initializeApp();
 
     return () => {
-      // Cleanup USB connection on unmount
+      // Cleanup USB/UDP connection on unmount
       if (usbDevice) {
         disconnectUSBDevice();
       }
+      stopUDPConnection();
     };
   }, []);
 
@@ -246,6 +282,89 @@ export default function AuscultationScreen() {
     }
   };
 
+  const initializeUDPConnection = async () => {
+    try {
+      console.log("Starting UDP listener...");
+
+      const socket: any = dgram.createSocket({
+        type: "udp4",
+        reusePort: true,
+      });
+
+      udpSocketRef.current = socket;
+
+      socket.bind(UDP_PORT);
+
+      socket.on("listening", () => {
+        console.log(`UDP listening on ${UDP_PORT}`);
+      });
+
+      socket.on("message", async (msg: Buffer, rinfo: any) => {
+        if (!udpConnectedRef.current) {
+          console.log(`UDP stream detected from ${rinfo.address}`);
+
+          udpConnectedRef.current = true;
+          setConnectionMode(CONNECTION_MODE.WIFI);
+        }
+
+        handleUDPData(msg);
+      });
+
+      socket.on("error", (err: any) => {
+        console.log("UDP error:", err);
+      });
+
+      console.log("UDP receiver initialized");
+    } catch (err) {
+      console.log("UDP init failed:", err);
+    }
+  };
+
+  const stopUDPConnection = () => {
+    try {
+      if (udpSocketRef.current) {
+        udpSocketRef.current.close();
+        udpSocketRef.current = null;
+      }
+    } catch {}
+  };
+
+  const handleUDPData = async (msg: Buffer) => {
+    try {
+      const text = msg.toString();
+
+      if (text === "AUDIO_START") {
+        receivedAudioDataRef.current = new Uint8Array();
+        receivingRef.current = true;
+        setIsReceivingData(true);
+        return;
+      }
+
+      if (text === "AUDIO_END") {
+        receivingRef.current = false;
+        setIsReceivingData(false);
+
+        await processReceivedAudio();
+
+        return;
+      }
+
+      if (receivingRef.current) {
+        const chunk = new Uint8Array(msg);
+        const current = receivedAudioDataRef.current;
+        const merged = new Uint8Array(current.length + chunk.length);
+
+        merged.set(current);
+        merged.set(chunk, current.length);
+
+        receivedAudioDataRef.current = merged;
+        setReceivedAudioData(merged);
+      }
+    } catch (err) {
+      console.log(err);
+    }
+  };
+
   // Initialize USB connection to the microphone device
   const initializeUSBConnection = async () => {
     try {
@@ -288,6 +407,10 @@ export default function AuscultationScreen() {
 
       setUsbDevice(device);
       setIsConnected(true);
+      // Mark connection mode as USB
+      setConnectionMode(CONNECTION_MODE.USB);
+      // If USB connects, mark UDP as not connected for fallback logic
+      udpConnectedRef.current = false;
 
       // Set up data listener - data comes as EventData which has a 'data' property
       const subscription = device.onReceived((event: any) => {
@@ -296,6 +419,9 @@ export default function AuscultationScreen() {
           typeof event === "string" ? event : event.data || String(event);
         handleReceivedUSBData(dataString);
       });
+
+      // Keep reference to subscription for cleanup
+      usbSubscriptionRef.current = subscription;
 
       // Send ping to test connection
       await sendUSBCommand(USB_COMMANDS.PING);
@@ -311,6 +437,17 @@ export default function AuscultationScreen() {
   const disconnectUSBDevice = async () => {
     try {
       if (usbDevice) {
+        // Remove subscription if present
+        try {
+          if (usbSubscriptionRef.current) {
+            usbSubscriptionRef.current.remove?.();
+            usbSubscriptionRef.current.unsubscribe?.();
+            usbSubscriptionRef.current = null;
+          }
+        } catch (e) {
+          console.warn("Error removing USB subscription:", e);
+        }
+
         await usbDevice.close();
         setUsbDevice(null);
         setIsConnected(false);
@@ -414,6 +551,8 @@ export default function AuscultationScreen() {
       if (data.startsWith("AUDIO_START")) {
         console.log("Audio data transmission started");
         receivedAudioDataRef.current = new Uint8Array();
+        // Use ref to avoid dropped packets
+        receivingRef.current = true;
         setIsReceivingData(true);
         return;
       }
@@ -421,13 +560,14 @@ export default function AuscultationScreen() {
       // Check if it's the end of audio data
       if (data.startsWith("AUDIO_END")) {
         console.log("Audio data transmission completed");
+        receivingRef.current = false;
         setIsReceivingData(false);
         processReceivedAudio();
         return;
       }
 
       // If we're receiving audio data, accumulate it
-      if (isReceivingData) {
+      if (receivingRef.current) {
         // Convert received string data to Uint8Array
         // Assuming the device sends base64 encoded audio data
         try {
@@ -458,6 +598,71 @@ export default function AuscultationScreen() {
     }
   };
 
+  // Helper: detect if buffer contains a WAV header
+  const isWavData = (data: Uint8Array) => {
+    try {
+      if (data.length < 12) return false;
+      const riff = String.fromCharCode.apply(null, Array.from(data.slice(0, 4)));
+      const wave = String.fromCharCode.apply(null, Array.from(data.slice(8, 12)));
+      return riff === "RIFF" && wave === "WAVE";
+    } catch (e) {
+      return false;
+    }
+  };
+
+  // Helper: wrap raw PCM bytes into a WAV container
+  // This supports 8-bit unsigned PCM as well as 16-bit signed PCM.
+  const pcmToWav = (
+    pcmBytes: Uint8Array,
+    opts: { sampleRate?: number; numChannels?: number; bitsPerSample?: number } = {}
+  ) => {
+    const sampleRate = opts.sampleRate || 16000;
+    const numChannels = opts.numChannels || 1;
+    const bitsPerSample = opts.bitsPerSample || 16;
+
+    const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+    const blockAlign = numChannels * (bitsPerSample / 8);
+    const dataSize = pcmBytes.length;
+
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+    let offset = 0;
+
+    const writeString = (s: string) => {
+      for (let i = 0; i < s.length; i++) {
+        view.setUint8(offset++, s.charCodeAt(i));
+      }
+    };
+
+    writeString("RIFF");
+    view.setUint32(offset, 36 + dataSize, true);
+    offset += 4;
+    writeString("WAVE");
+    writeString("fmt ");
+    view.setUint32(offset, 16, true);
+    offset += 4;
+    view.setUint16(offset, 1, true); // PCM format
+    offset += 2;
+    view.setUint16(offset, numChannels, true);
+    offset += 2;
+    view.setUint32(offset, sampleRate, true);
+    offset += 4;
+    view.setUint32(offset, byteRate, true);
+    offset += 4;
+    view.setUint16(offset, blockAlign, true);
+    offset += 2;
+    view.setUint16(offset, bitsPerSample, true);
+    offset += 2;
+    writeString("data");
+    view.setUint32(offset, dataSize, true);
+    offset += 4;
+
+    const uint8 = new Uint8Array(buffer);
+    uint8.set(pcmBytes, 44);
+
+    return uint8;
+  };
+
   const processReceivedAudio = async () => {
     try {
       const audioData = receivedAudioDataRef.current;
@@ -469,14 +674,24 @@ export default function AuscultationScreen() {
 
       console.log(`Processing ${audioData.length} bytes of audio data`);
 
-      // Convert to base64 for saving
-      const base64String = btoa(
-        String.fromCharCode.apply(null, Array.from(audioData))
-      );
+      // If data already looks like a WAV, use as-is; otherwise wrap raw PCM into a WAV container
+      let audioBytes: Uint8Array = audioData;
+      if (!isWavData(audioData)) {
+        console.log("Raw PCM detected — wrapping into WAV container (8kHz unsigned 8-bit mono)");
+        audioBytes = pcmToWav(audioData, {
+          sampleRate: 8000,
+          numChannels: 1,
+          bitsPerSample: 8,
+        });
+      }
+
+      // Convert to base64 using Buffer for reliability
+      const base64String = Buffer.from(audioBytes).toString("base64");
 
       // Create a temporary file to save the audio
       const timestamp = Date.now();
       const tempFileName = `temp_audio_${timestamp}.wav`;
+      // @ts-ignore — documentDirectory is a runtime property of expo-file-system
       const tempUri = FileSystem.documentDirectory + tempFileName;
 
       // Save the audio data to a file
@@ -489,6 +704,7 @@ export default function AuscultationScreen() {
       // Reset received data for next capture
       receivedAudioDataRef.current = new Uint8Array();
       setReceivedAudioData(new Uint8Array());
+      receivingRef.current = false;
       setIsReceivingData(false);
 
       // Process the captured audio
@@ -560,22 +776,33 @@ export default function AuscultationScreen() {
 
   // Handle audio capture - use USB recording or fallback to demo
   const handleCapture = async () => {
-  if (isConnected) {
-    // USB Mode
-    if (isRecording) {
-      await stopRecording();
+    if (connectionMode === CONNECTION_MODE.WIFI) {
+      Alert.alert(
+        "WiFi Active",
+        "Audio is being received from STM32 over WiFi."
+      );
+      return;
+    } else if (connectionMode === CONNECTION_MODE.USB) {
+      // USB Mode
+      if (!isConnected) {
+        Alert.alert("Not Connected", "USB device not available.");
+        return;
+      }
+
+      if (isRecording) {
+        await stopRecording();
+      } else {
+        await startRecording();
+      }
     } else {
-      await startRecording();
+      // Phone Microphone Mode
+      if (isRecording) {
+        await stopPhoneRecording();
+      } else {
+        await startPhoneRecording();
+      }
     }
-  } else {
-    // Phone Microphone Mode
-    if (isRecording) {
-      await stopPhoneRecording();
-    } else {
-      await startPhoneRecording();
-    }
-  }
-};
+  };
 
   // Audio capture using real audio file from assets (fallback)
   // const useMockAudioCapture = async () => {
@@ -829,7 +1056,27 @@ export default function AuscultationScreen() {
           <Feather name="arrow-left" size={24} color="#1E293B" />
         </TouchableOpacity>
         <View style={styles.titleContainer}>
-          <Text style={styles.title}>{testName || "Auscultation"}</Text>
+          <View style={styles.titleRow}>
+            <Text style={styles.title}>{testName || "Auscultation"}</Text>
+            <View
+              style={[
+                styles.connectionBadge,
+                connectionMode === CONNECTION_MODE.WIFI
+                  ? styles.wifiBadge
+                  : connectionMode === CONNECTION_MODE.USB
+                  ? styles.usbBadge
+                  : styles.phoneBadge,
+              ]}
+            >
+              <Text style={styles.connectionBadgeText}>
+                {connectionMode === CONNECTION_MODE.WIFI
+                  ? "Wi-Fi"
+                  : connectionMode === CONNECTION_MODE.USB
+                  ? "USB"
+                  : "Phone"}
+              </Text>
+            </View>
+          </View>
           <Text style={styles.subtitle}>
             Capture heart/lung sounds for analysis
           </Text>
@@ -844,7 +1091,7 @@ export default function AuscultationScreen() {
         <View style={styles.guidanceContainer}>
           <Text style={styles.guidanceTitle}>Auscultation Guidance</Text>
           <Text style={styles.guidanceText}>
-            "Connect the USB microphone device to record audio, or use demo mode with sample audio."
+            "Connect the microphone device to record audio, or use demo mode with sample audio."
           </Text>
         </View>
 
@@ -1094,10 +1341,42 @@ const styles = StyleSheet.create({
   titleContainer: {
     flex: 1,
   },
+  titleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+  },
   title: {
     fontSize: 24,
     fontWeight: "bold",
     color: "#1E293B",
+  },
+  connectionBadge: {
+    marginLeft: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(30, 41, 59, 0.12)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  connectionBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#1E293B",
+  },
+  wifiBadge: {
+    backgroundColor: "rgba(59, 130, 246, 0.12)",
+    borderColor: "#93C5FD",
+  },
+  usbBadge: {
+    backgroundColor: "rgba(16, 185, 129, 0.12)",
+    borderColor: "#6EE7B7",
+  },
+  phoneBadge: {
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+    borderColor: "#FACC15",
   },
   subtitle: {
     fontSize: 16,
