@@ -1,44 +1,17 @@
-# Medscope Setup Guide
+# Medscope — Quick Setup & Architecture Overview
 
-## Prerequisites
+This document contains the core setup and run steps, followed by a concise but interviewer-friendly description of the app, architecture, and a short roadmap item describing the planned native ADPCM ↔ React Native audio bridge.
 
-### 1. Android Development Tools
+## Quick setup (core)
 
-Install the following tools to run the app on your Android device:
+Prerequisites
+- Android Studio (or Xcode for iOS) and command-line SDK tools
+- Node.js and npm
 
-#### Android Studio
+Environment
+- Ensure Android SDK tools are on your `PATH` and `ANDROID_HOME` is set.
 
-- **Windows/macOS/Linux**: [Download Android Studio](https://developer.android.com/studio)
-- Install and open Android Studio, then go to: `Settings > Languages & Frameworks > Android SDK`
-- Install latest SDK Platform and Android SDK Build-Tools
-
-#### Android SDK Command Line Tools
-
-- **Linux**:
-  ```bash
-  wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
-  unzip commandlinetools-linux-9477386_latest.zip -d $HOME/Android/Sdk/cmdline-tools
-  mv $HOME/Android/Sdk/cmdline-tools/cmdline-tools $HOME/Android/Sdk/cmdline-tools/latest
-  ```
-- **macOS**:
-  ```bash
-  wget https://dl.google.com/android/repository/commandlinetools-mac-9477386_latest.zip
-  unzip commandlinetools-mac-9477386_latest.zip -d $HOME/Library/Android/sdk/cmdline-tools
-  mv $HOME/Library/Android/sdk/cmdline-tools/cmdline-tools $HOME/Library/Android/sdk/cmdline-tools/latest
-  ```
-- **Windows**: [Download from here](https://developer.android.com/studio#command-tools) and extract to `%LOCALAPPDATA%\Android\Sdk\cmdline-tools\latest`
-
-#### Set Environment Variables
-
-Add to your `.bashrc` / `.zshrc` (Linux/macOS) or System Environment Variables (Windows):
-
-```bash
-export ANDROID_HOME=$HOME/Android/Sdk  # macOS: $HOME/Library/Android/sdk
-export PATH=$PATH:$ANDROID_HOME/platform-tools
-export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin
-```
-
-### 2. Install Dependencies
+Install dependencies
 
 ```bash
 npm install
@@ -46,126 +19,62 @@ npm install --global @expo/ngrok@^4.1.0
 npm install -g @expo/cli eas-cli
 ```
 
-### 3. Build and Run
+Build and run (Android)
 
 ```bash
 npx expo prebuild --clean
 npx expo run:android
 ```
 
----
+Notes
+- Native features (USB serial, low-level TCP sockets) require running on a physical device and a prebuild (see commands above).
 
-## Configuration Changes Required
+## What the app does (elevator pitch for interviewers)
 
-### File: `constants/api.ts`
+Medscope is a mobile-first clinical capture platform that enables rapid, consistent acquisition of diagnostic-quality images and biosignals from either a smartphone or low-cost microcontroller devices. Captures are forwarded to configurable ML endpoints for automated analysis (imaging and audio) and the app stores results and metadata for clinician review.
 
-Update these URLs to point to your machine learning model servers:
+Core user-facing flows
+- Pharyngoscopy & Dermatoscopy: guided camera capture, send images to ML models, receive transformed images and predictions.
+- Auscultation: record heart/lung sounds via phone mic or hardware device (USB/UDP), upload to analysis service and present results.
+- ECG/demo streams: accept TCP/UDP streams from microcontrollers for real-time visualization and saving.
 
-```typescript
-export const apiurl = "YOUR_ML_SERVER_URL"; // Main API server
-export const audioApiUrl = `${apiurl}/send-audio`; // Audio processing endpoint
-export const cameraServerUrl = "YOUR_CAMERA_HELPER_SERVER_URL"; // Camera relay server
-export const dermatoscopyApiUrl = "YOUR_DERMATO_ML_MODEL_URL"; // Skin analysis model
-```
+## Architecture (concise, technical)
 
-**What these do:**
+High-level layers
+- Presentation: React Native + Expo, `expo-router` for navigation.
+- Capture components: `components/CameraInput.tsx` (phone camera) and per-screen capture handlers for device streams.
+- Device I/O: TCP server (for microcontroller cameras), UDP listener (audio stream), and Android USB-serial integration for dedicated peripherals.
+- Backend integration: multipart upload to ML/render endpoints using `axios`; endpoints are configured in `constants/api.ts`.
 
-- `apiurl`: Main server handling general API requests
-- `audioApiUrl`: Server that processes heart sound audio files
-- `cameraServerUrl`: Helper server that converts TCP data to HTTP (for microcontroller communication)
-- `dermatoscopyApiUrl`: Server running the skin condition detection model
+Camera flows
+- Phone camera: `CameraView` (`expo-camera`) → `takePictureAsync()` → parent uploads/handles the image.
+- Microcontroller camera: app opens a TCP server on the phone; the MCU connects as a TCP client and streams framed image bytes. The app accumulates frames, converts to a temporary file, and uploads to the model endpoint.
 
----
+Auscultation flows
+- Phone mic: `expo-av` for local recording and upload.
+- UDP (Wi‑Fi): MCU streams audio chunks to a UDP port; app accumulates chunks framed by `AUDIO_START`/`AUDIO_END` markers.
+- USB (Android): app enumerates devices, requests permission, sends commands (`START_REC`/`STOP_REC`) and receives base64 audio chunks via serial.
 
-### File: `app/pharyngoscopy.tsx`
+Native ADPCM ↔ React Native audio bridge (roadmap, concise)
 
-Update the ML model URL:
+Problem: raw PCM streaming from the MCU is bandwidth-heavy and has latency/cost implications. Solution: ADPCM encoded audio on the MCU plus native decode/playback in the app.
 
-```typescript
-const RENDER_API_URL = "YOUR_PHARYNGO_ML_MODEL_URL"; // Line 44
-```
+Planned approach:
+- Implement a small Android native module (Kotlin) that bridges Bluest Android SDK ADPCM encode/decode/playback APIs to React Native.
+- Expose streaming APIs so ADPCM chunks received over USB/UDP can be passed directly to native code for low-latency playback and optionally saved/decoded to WAV for ML upload.
+- Benefits: reduced bandwidth, better MCU resource use, and native-quality playback while keeping the JS layer small.
 
-**What this does:** Server running the throat analysis model for pharyngitis detection
+## Where to look in the repo
+- App entry & routing: `app/_layout.tsx`
+- Phone camera: `components/CameraInput.tsx`
+- Pharyngoscopy (camera TCP integration): `app/pharyngoscopy.tsx`
+- Auscultation (USB/UDP/phone): `app/auscultation.tsx`
+- Demo server / ECG mock: `services/TcpService.ts`
 
----
-
-### File: `app/dermatoscopy.tsx`
-
-Update the ML model URL:
-
-```typescript
-const RENDER_API_URL = "YOUR_DERMATO_ML_MODEL_URL"; // Line 40
-```
-
-**What this does:** Server running the skin condition analysis model
-
----
-
-### File: `app/auscultation.tsx`
-
-Update USB device identifiers and API endpoint:
-
-```typescript
-const USB_VENDOR_ID = 0x1234; // Line 32 - Replace with your stethoscope device's vendor ID
-const USB_PRODUCT_ID = 0x5678; // Line 33 - Replace with your stethoscope device's product ID
-const USB_BAUD_RATE = 115200; // Line 34 - Adjust if your device uses different speed
-const AUSCULTATION_API_URL = "YOUR_HEART_SOUND_ML_MODEL_URL"; // Line 37
-```
-
-**What these do:**
-
-- USB IDs: Identify your digital stethoscope device when connected
-- Baud rate: Communication speed with the stethoscope (usually 9600, 115200, or 921600)
-- API URL: Server that analyzes heart sounds for abnormalities
-
-**How to find USB IDs:**
-
-- Connect device to computer
-- **Linux**: Run `lsusb` in terminal
-- **macOS**: Use System Information > USB
-- **Windows**: Use Device Manager > USB Controllers
+## Why this is a good intern project
+- Cross-cutting: touches UI, native modules, networking, and embedded firmware contracts.
+- Clear impact: implement ADPCM bridge, improve framing/protocol robustness, or harden file upload pipelines.
+- Demonstrates mobile craft: shipping native integrations, attention to performance, and careful UX for error states.
 
 ---
-
-## Network Setup for Microcontrollers
-
-### Phone Configuration
-
-1. **Enable Mobile Hotspot** on your Android phone
-2. Note down the hotspot IP address (usually `192.168.43.1` or similar)
-3. Find it in: `Settings > Network & Internet > Hotspot & tethering > Wi-Fi hotspot > Advanced`
-
-### Microcontroller Configuration
-
-Your microcontrollers (camera devices for pharyngoscopy/dermatoscopy) must be programmed with:
-
-- **Phone's IP address**: The IP shown in hotspot settings
-- **Port**: `8080` (matches `TCP_PORT` in the app)
-- **Connection type**: TCP client connecting to phone's IP
-
-**Example**: If phone IP is `192.168.43.1`, program microcontroller to connect to `192.168.43.1:8080`
-
----
-
-## Testing
-
-1. Turn on phone hotspot
-2. Connect microcontrollers to phone's hotspot network
-3. Run the app: `npx expo run:android`
-4. Check connection status indicators in each test screen
-
----
-
-## Troubleshooting
-
-- **"Disconnected" status**: Check if microcontroller is on same network as phone
-- **"Failed to analyze"**: Verify ML model URLs are accessible and running
-- **USB device not found**: Confirm USB vendor/product IDs match your device
-- **Build errors**: Run `npx expo prebuild --clean` again
-
----
-
-## Quick Reference: Port Numbers
-
-- **TCP Server (app listens)**: Port `8080` - for camera devices
-- **USB Serial**: Baud rate `115200` - for stethoscope device
+If you want, I can now: add a short protocol spec file (firmware ↔ app), or implement one small hardening (safe large-binary handling in `app/pharyngoscopy.tsx`). Tell me which and I will proceed.
