@@ -71,10 +71,7 @@ Planned approach:
 - Auscultation (USB/UDP/phone): `app/auscultation.tsx`
 - Demo server / ECG mock: `services/TcpService.ts`
 
-## Why this is a good intern project
+## Project specialties:
 - Cross-cutting: touches UI, native modules, networking, and embedded firmware contracts.
 - Clear impact: implement ADPCM bridge, improve framing/protocol robustness, or harden file upload pipelines.
 - Demonstrates mobile craft: shipping native integrations, attention to performance, and careful UX for error states.
-
----
-If you want, I can now: add a short protocol spec file (firmware ↔ app), or implement one small hardening (safe large-binary handling in `app/pharyngoscopy.tsx`). Tell me which and I will proceed.
