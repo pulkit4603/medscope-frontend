@@ -23,6 +23,7 @@ import { Asset } from "expo-asset";
 import axios from "axios";
 import dgram from "react-native-udp";
 import { Buffer } from "buffer";
+import { NativeAuscultationAudio } from "../services/NativeAuscultationAudio";
 
 // @ts-ignore
 import {
@@ -115,6 +116,8 @@ export default function AuscultationScreen() {
     new Uint8Array()
   );
   const [isReceivingData, setIsReceivingData] = useState<boolean>(false);
+  const nativeRecordingActiveRef = useRef<boolean>(false);
+  const nativeStreamingActiveRef = useRef<boolean>(false);
 
   // Use ref for accumulating audio data
   const receivedAudioDataRef = useRef<Uint8Array>(new Uint8Array());
@@ -153,6 +156,7 @@ export default function AuscultationScreen() {
         disconnectUSBDevice();
       }
       stopUDPConnection();
+      void stopNativeRecordingSession();
     };
   }, []);
 
@@ -187,6 +191,64 @@ export default function AuscultationScreen() {
         intermediates: true,
       });
     }
+  };
+
+  const isNativeAudioAvailable = () =>
+    Platform.OS === "android" && NativeAuscultationAudio.isAvailable();
+
+  const startNativeRecordingSession = async (sessionTag: string) => {
+    if (!isNativeAudioAvailable()) return false;
+
+    if (nativeRecordingActiveRef.current) {
+      return true;
+    }
+
+    try {
+      if (!nativeStreamingActiveRef.current) {
+        await NativeAuscultationAudio.startStreaming();
+        nativeStreamingActiveRef.current = true;
+      }
+
+      await NativeAuscultationAudio.startRecording(sessionTag);
+      nativeRecordingActiveRef.current = true;
+      return true;
+    } catch (error) {
+      console.error("Failed to start native recording session:", error);
+      return false;
+    }
+  };
+
+  const stopNativeRecordingSession = async () => {
+    if (!isNativeAudioAvailable() || !nativeRecordingActiveRef.current) {
+      return null;
+    }
+
+    try {
+      const wavUri = await NativeAuscultationAudio.stopRecording();
+      nativeRecordingActiveRef.current = false;
+      return wavUri;
+    } catch (error) {
+      console.error("Failed to stop native recording session:", error);
+      return null;
+    } finally {
+      if (nativeStreamingActiveRef.current) {
+        try {
+          await NativeAuscultationAudio.stopStreaming();
+        } catch (error) {
+          console.error("Failed to stop native streaming:", error);
+        }
+        nativeStreamingActiveRef.current = false;
+      }
+    }
+  };
+
+  const pushChunkToNativeAudio = (base64Chunk: string) => {
+    if (!isNativeAudioAvailable() || !nativeRecordingActiveRef.current) return;
+    void NativeAuscultationAudio.pushAdpcmChunkBase64(base64Chunk).catch(
+      (error) => {
+        console.error("Failed to push ADPCM chunk to native bridge:", error);
+      }
+    );
   };
 
   const loadSavedAudioFiles = async () => {
@@ -337,6 +399,7 @@ export default function AuscultationScreen() {
         receivedAudioDataRef.current = new Uint8Array();
         receivingRef.current = true;
         setIsReceivingData(true);
+        await startNativeRecordingSession("wifi");
         return;
       }
 
@@ -351,6 +414,9 @@ export default function AuscultationScreen() {
 
       if (receivingRef.current) {
         const chunk = new Uint8Array(msg);
+        const base64Chunk = Buffer.from(chunk).toString("base64");
+        pushChunkToNativeAudio(base64Chunk);
+
         const current = receivedAudioDataRef.current;
         const merged = new Uint8Array(current.length + chunk.length);
 
@@ -554,6 +620,7 @@ export default function AuscultationScreen() {
         // Use ref to avoid dropped packets
         receivingRef.current = true;
         setIsReceivingData(true);
+        void startNativeRecordingSession("usb");
         return;
       }
 
@@ -562,36 +629,14 @@ export default function AuscultationScreen() {
         console.log("Audio data transmission completed");
         receivingRef.current = false;
         setIsReceivingData(false);
-        processReceivedAudio();
+        void processReceivedAudio();
         return;
       }
 
       // If we're receiving audio data, accumulate it
       if (receivingRef.current) {
-        // Convert received string data to Uint8Array
-        // Assuming the device sends base64 encoded audio data
-        try {
-          const binaryString = atob(data);
-          const audioChunk = new Uint8Array(binaryString.length);
-          for (let i = 0; i < binaryString.length; i++) {
-            audioChunk[i] = binaryString.charCodeAt(i);
-          }
-
-          // Accumulate audio data
-          const currentData = receivedAudioDataRef.current;
-          const newData = new Uint8Array(
-            currentData.length + audioChunk.length
-          );
-          newData.set(currentData);
-          newData.set(audioChunk, currentData.length);
-
-          receivedAudioDataRef.current = newData;
-          setReceivedAudioData(newData);
-
-          console.log(`Accumulated ${newData.length} bytes of audio data`);
-        } catch (decodeError) {
-          console.error("Error decoding audio data:", decodeError);
-        }
+        const base64Chunk = data.trim();
+        pushChunkToNativeAudio(base64Chunk);
       }
     } catch (error) {
       console.error("Error processing received USB data:", error);
@@ -665,6 +710,16 @@ export default function AuscultationScreen() {
 
   const processReceivedAudio = async () => {
     try {
+      const nativeWavUri = await stopNativeRecordingSession();
+      if (nativeWavUri) {
+        await processCapturedAudio(nativeWavUri);
+        receivedAudioDataRef.current = new Uint8Array();
+        setReceivedAudioData(new Uint8Array());
+        receivingRef.current = false;
+        setIsReceivingData(false);
+        return;
+      }
+
       const audioData = receivedAudioDataRef.current;
 
       if (audioData.length === 0) {
@@ -732,10 +787,13 @@ export default function AuscultationScreen() {
       setIsRecording(true);
       setIsProcessing(true);
 
+      await startNativeRecordingSession("usb-manual");
+
       const success = await sendUSBCommand(USB_COMMANDS.START_RECORDING);
       if (!success) {
         setIsRecording(false);
         setIsProcessing(false);
+        await stopNativeRecordingSession();
         return;
       }
 
@@ -769,6 +827,7 @@ export default function AuscultationScreen() {
       // Keep isProcessing true until we receive and process the audio data
     } catch (error) {
       console.error("Error stopping recording:", error);
+      await stopNativeRecordingSession();
       setIsRecording(false);
       setIsProcessing(false);
     }
